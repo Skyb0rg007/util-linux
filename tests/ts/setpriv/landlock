@@ -36,13 +36,13 @@ ts_finalize_subtest
 
 ts_init_subtest "partial-access-fail"
 "$TS_CMD_SETPRIV" --landlock-access \
-	fs:write cp /dev/null /dev/zero \
+	fs:write-file cp /dev/null /dev/zero \
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
 
 ts_init_subtest "partial-access-success"
 "$TS_CMD_SETPRIV" \
-	--landlock-access fs:write --landlock-rule path-beneath:write:/dev/zero \
+	--landlock-access fs:write-file --landlock-rule path-beneath:write-file:/dev/zero \
 	cp /dev/null /dev/zero \
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
@@ -57,6 +57,13 @@ ts_finalize_subtest
 ts_init_subtest "wildcard-access"
 "$TS_CMD_SETPRIV" --landlock-access fs \
 	--landlock-rule path-beneath::/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "net-access"
+"$TS_CMD_SETPRIV" --landlock-access net \
+	--landlock-rule net-port:bind-tcp,connect-tcp:80 \
 	true \
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
