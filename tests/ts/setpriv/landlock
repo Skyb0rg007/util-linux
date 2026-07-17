@@ -93,4 +93,15 @@ else
 fi
 ts_finalize_subtest
 
+ts_init_subtest "quiet-access"
+if "$TS_CMD_SETPRIV" --landlock-access fs-quiet true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-access fs-quiet:write-file \
+		--landlock-rule path-beneath-quiet:write-file:/dev/zero \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock quiet-rule support (requires ABI 10)"
+fi
+ts_finalize_subtest
+
 ts_finalize

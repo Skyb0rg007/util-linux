@@ -118,6 +118,7 @@ static inline int landlock_restrict_self(int ruleset_fd, uint32_t flags)
 struct landlock_rule_entry {
 	struct list_head head;
 	enum landlock_rule_type rule_type;
+	bool quiet;
 	union {
 		struct landlock_path_beneath_attr path_beneath_attr;
 		struct landlock_net_port_attr net_port_attr;
@@ -250,6 +251,7 @@ static uint64_t parse_landlock_scope(const char *list)
 void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 {
 	const char *type;
+	uint64_t bits;
 
 	if (strcmp(str, "fs") == 0) {
 		opts->access_fs |= parse_landlock_fs_access("");
@@ -257,6 +259,18 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 	}
 	if ((type = ul_startswith(str, "fs:")) != NULL) {
 		opts->access_fs |= parse_landlock_fs_access(type);
+		return;
+	}
+	if (strcmp(str, "fs-quiet") == 0) {
+		bits = parse_landlock_fs_access("");
+		opts->access_fs |= bits;
+		opts->quiet_access_fs |= bits;
+		return;
+	}
+	if ((type = ul_startswith(str, "fs-quiet:")) != NULL) {
+		bits = parse_landlock_fs_access(type);
+		opts->access_fs |= bits;
+		opts->quiet_access_fs |= bits;
 		return;
 	}
 
@@ -268,6 +282,18 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 		opts->access_net |= parse_landlock_net_access(type);
 		return;
 	}
+	if (strcmp(str, "net-quiet") == 0) {
+		bits = parse_landlock_net_access("");
+		opts->access_net |= bits;
+		opts->quiet_access_net |= bits;
+		return;
+	}
+	if ((type = ul_startswith(str, "net-quiet:")) != NULL) {
+		bits = parse_landlock_net_access(type);
+		opts->access_net |= bits;
+		opts->quiet_access_net |= bits;
+		return;
+	}
 
 	if (strcmp(str, "scope") == 0) {
 		opts->scoped |= parse_landlock_scope("");
@@ -275,6 +301,18 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 	}
 	if ((type = ul_startswith(str, "scope:")) != NULL) {
 		opts->scoped |= parse_landlock_scope(type);
+		return;
+	}
+	if (strcmp(str, "scope-quiet") == 0) {
+		bits = parse_landlock_scope("");
+		opts->scoped |= bits;
+		opts->quiet_scoped |= bits;
+		return;
+	}
+	if ((type = ul_startswith(str, "scope-quiet:")) != NULL) {
+		bits = parse_landlock_scope(type);
+		opts->scoped |= bits;
+		opts->quiet_scoped |= bits;
 		return;
 	}
 
@@ -288,9 +326,16 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 	const char *accesses;
 	const char *arg;
 	char *accesses_part;
+	bool quiet = false;
 
-	if ((accesses = ul_startswith(str, "path-beneath:")) != NULL) {
+	if ((accesses = ul_startswith(str, "path-beneath-quiet:")) != NULL) {
 		rule_type = LANDLOCK_RULE_PATH_BENEATH;
+		quiet = true;
+	} else if ((accesses = ul_startswith(str, "path-beneath:")) != NULL) {
+		rule_type = LANDLOCK_RULE_PATH_BENEATH;
+	} else if ((accesses = ul_startswith(str, "net-port-quiet:")) != NULL) {
+		rule_type = LANDLOCK_RULE_NET_PORT;
+		quiet = true;
 	} else if ((accesses = ul_startswith(str, "net-port:")) != NULL) {
 		rule_type = LANDLOCK_RULE_NET_PORT;
 	} else {
@@ -306,6 +351,7 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 
 	rule = xmalloc(sizeof(*rule));
 	rule->rule_type = rule_type;
+	rule->quiet = quiet;
 
 	switch (rule_type) {
 	case LANDLOCK_RULE_PATH_BENEATH:
@@ -356,6 +402,7 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	struct landlock_rule_entry *rule;
 	struct list_head *entry;
 	int fd, ret;
+	uint32_t rule_flags;
 
 	if (!opts->access_fs && !opts->access_net && !opts->scoped)
 		return;
@@ -364,6 +411,9 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 		.handled_access_fs = opts->access_fs,
 		.handled_access_net = opts->access_net,
 		.scoped = opts->scoped,
+		.quiet_access_fs = opts->quiet_access_fs,
+		.quiet_access_net = opts->quiet_access_net,
+		.quiet_scoped = opts->quiet_scoped,
 	};
 
 	fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
@@ -373,14 +423,16 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	list_for_each(entry, &opts->rules) {
 		rule = list_entry(entry, struct landlock_rule_entry, head);
 
+		rule_flags = rule->quiet ? LANDLOCK_ADD_RULE_QUIET : 0;
+
 		switch (rule->rule_type) {
 		case LANDLOCK_RULE_PATH_BENEATH:
 			ret = landlock_add_rule(fd, rule->rule_type,
-						 &rule->path_beneath_attr, 0);
+						 &rule->path_beneath_attr, rule_flags);
 			break;
 		case LANDLOCK_RULE_NET_PORT:
 			ret = landlock_add_rule(fd, rule->rule_type,
-						 &rule->net_port_attr, 0);
+						 &rule->net_port_attr, rule_flags);
 			break;
 		default:
 			abort();
@@ -401,7 +453,7 @@ void usage_landlock(FILE *out)
 	size_t i;
 
 	fputs(USAGE_ARGUMENTS, out);
-	fputs(_(" <access> is a landlock access; syntax is <category>[:<right>, ...>]\n"), out);
+	fputs(_(" <access> is a landlock access; syntax is <category>[-quiet][:<right>,...]\n"), out);
 	fputs(_(" <rule> is a landlock rule; syntax is <type>:<right>:<argument>\n"), out);
 	fputs(_(" <flags> is a comma separated list of landlock restrict-self flags\n"), out);
 
@@ -411,12 +463,16 @@ void usage_landlock(FILE *out)
 	fputs(_("  fs    - filesystem access rights\n"), out);
 	fputs(_("  net   - network access rights\n"), out);
 	fputs(_("  scope - IPC scoping restrictions (no exception rules possible)\n"), out);
+	fputs(_(" each category also has a \"-quiet\" variant (e.g. *fs-quiet*) which\n"
+		" additionally suppresses audit logging for the given rights\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock rule types are:\n"), out);
 	/* TRANSLATORS: Keep *{path-beneath,net-port}* untranslated, they're type names */
 	fputs(_("  path-beneath - filesystem based rule; <argument> is a path\n"), out);
 	fputs(_("  net-port     - network port based rule; <argument> is a port number\n"), out);
+	fputs(_(" each rule type also has a \"-quiet\" variant (e.g. *path-beneath-quiet*)\n"
+		" which suppresses audit logging for denied accesses to that object\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock filesystem rights are:\n"), out);
