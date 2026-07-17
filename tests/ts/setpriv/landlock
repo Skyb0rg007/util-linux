@@ -104,4 +104,49 @@ else
 fi
 ts_finalize_subtest
 
+ts_init_subtest "abi-range-success"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1000 --landlock-access fs:execute,read-file \
+	--landlock-rule path-beneath:execute,read-file:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-below-minimum-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 1000 --landlock-access fs:execute true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "abi-above-maximum-caps"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1 --landlock-access fs:execute,read-file \
+	--landlock-rule path-beneath:execute,read-file:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-explicit-within-max-degrades"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1000 --landlock-access fs:execute,resolve-unix \
+	--landlock-rule path-beneath:execute:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-explicit-exceeds-max-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 1-8 --landlock-access fs:resolve-unix true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "abi-zero-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 0 --landlock-access fs:execute true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
 ts_finalize
