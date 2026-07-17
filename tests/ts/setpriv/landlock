@@ -68,4 +68,15 @@ ts_init_subtest "net-access"
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
 
+ts_init_subtest "scope-access"
+if "$TS_CMD_SETPRIV" --landlock-abi 6-1000 \
+	--landlock-access scope:signal,abstract-unix-socket true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-access scope:signal,abstract-unix-socket \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock scope support (requires ABI 6)"
+fi
+ts_finalize_subtest
+
 ts_finalize

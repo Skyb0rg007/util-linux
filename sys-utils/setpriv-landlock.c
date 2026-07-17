@@ -157,6 +157,11 @@ static const struct landlock_access_entry landlock_access_net[] = {
 	{ LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP, "connect-send-udp", N_("set the remote port of a UDP socket, or send a datagram to an explicit remote port") },
 };
 
+static const struct landlock_access_entry landlock_scope[] = {
+	{ LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET, "abstract-unix-socket", N_("restrict connections to abstract UNIX sockets outside the domain") },
+	{ LANDLOCK_SCOPE_SIGNAL,               "signal",               N_("restrict sending signals to processes outside the domain") },
+};
+
 static long landlock_access_entry_to_mask(const struct landlock_access_entry *table,
 					   size_t n, const char *str, size_t len)
 {
@@ -226,6 +231,11 @@ static uint64_t parse_landlock_net_access(const char *list)
 	return parse_landlock_bits(list, landlock_access_net, ARRAY_SIZE(landlock_access_net));
 }
 
+static uint64_t parse_landlock_scope(const char *list)
+{
+	return parse_landlock_bits(list, landlock_scope, ARRAY_SIZE(landlock_scope));
+}
+
 void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 {
 	const char *type;
@@ -245,6 +255,15 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 	}
 	if ((type = ul_startswith(str, "net:")) != NULL) {
 		opts->access_net |= parse_landlock_net_access(type);
+		return;
+	}
+
+	if (strcmp(str, "scope") == 0) {
+		opts->scoped |= parse_landlock_scope("");
+		return;
+	}
+	if ((type = ul_startswith(str, "scope:")) != NULL) {
+		opts->scoped |= parse_landlock_scope(type);
 		return;
 	}
 
@@ -316,12 +335,13 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	struct list_head *entry;
 	int fd, ret;
 
-	if (!opts->access_fs && !opts->access_net)
+	if (!opts->access_fs && !opts->access_net && !opts->scoped)
 		return;
 
 	const struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = opts->access_fs,
 		.handled_access_net = opts->access_net,
+		.scoped = opts->scoped,
 	};
 
 	fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
@@ -364,9 +384,10 @@ void usage_landlock(FILE *out)
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock access categories are:\n"), out);
-	/* TRANSLATORS: Keep *{fs,net}* untranslated, they're category names */
-	fputs(_("  fs  - filesystem access rights\n"), out);
-	fputs(_("  net - network access rights\n"), out);
+	/* TRANSLATORS: Keep *{fs,net,scope}* untranslated, they're category names */
+	fputs(_("  fs    - filesystem access rights\n"), out);
+	fputs(_("  net   - network access rights\n"), out);
+	fputs(_("  scope - IPC scoping restrictions (no exception rules possible)\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock rule types are:\n"), out);
@@ -386,5 +407,12 @@ void usage_landlock(FILE *out)
 	for (i = 0; i < ARRAY_SIZE(landlock_access_net); i++) {
 		fprintf(out, "  %20s - %s\n", landlock_access_net[i].type,
 					_(landlock_access_net[i].help));
+	}
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(_(" available landlock scopes are:\n"), out);
+	for (i = 0; i < ARRAY_SIZE(landlock_scope); i++) {
+		fprintf(out, "  %20s - %s\n", landlock_scope[i].type,
+					_(landlock_scope[i].help));
 	}
 }
