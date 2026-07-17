@@ -162,6 +162,12 @@ static const struct landlock_access_entry landlock_scope[] = {
 	{ LANDLOCK_SCOPE_SIGNAL,               "signal",               N_("restrict sending signals to processes outside the domain") },
 };
 
+static const struct landlock_access_entry landlock_restrict_self_flags[] = {
+	{ LANDLOCK_RESTRICT_SELF_LOG_SAME_EXEC_OFF,  "log-same-exec-off",  N_("do not log denied accesses until the next execve(2)") },
+	{ LANDLOCK_RESTRICT_SELF_LOG_NEW_EXEC_ON,    "log-new-exec-on",    N_("log denied accesses after the next execve(2)") },
+	{ LANDLOCK_RESTRICT_SELF_LOG_SUBDOMAINS_OFF, "log-subdomains-off", N_("do not log denied accesses from nested domains") },
+};
+
 static long landlock_access_entry_to_mask(const struct landlock_access_entry *table,
 					   size_t n, const char *str, size_t len)
 {
@@ -171,6 +177,11 @@ static long landlock_access_entry_to_mask(const struct landlock_access_entry *ta
 		if (strncmp(table[i].type, str, len) == 0)
 			return table[i].value;
 	return -1;
+}
+
+static long landlock_restrict_self_flag_to_mask(const char *str, size_t len)
+{
+	return landlock_access_entry_to_mask(landlock_restrict_self_flags, ARRAY_SIZE(landlock_restrict_self_flags), str, len);
 }
 
 /*
@@ -324,6 +335,17 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 	list_add(&rule->head, &opts->rules);
 }
 
+void parse_landlock_restrict_self(struct setpriv_landlock_opts *opts, const char *str)
+{
+	unsigned long r = 0;
+
+	if (string_to_bitmask(str, &r, landlock_restrict_self_flag_to_mask))
+		errx(EXIT_FAILURE,
+		     _("could not parse landlock restrict-self flags: %s"), str);
+
+	opts->restrict_self_flags |= r;
+}
+
 void init_landlock_opts(struct setpriv_landlock_opts *opts)
 {
 	INIT_LIST_HEAD(&opts->rules);
@@ -370,7 +392,7 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1)
 		err(SETPRIV_EXIT_PRIVERR, _("disallow granting new privileges for landlock failed"));
 
-	if (landlock_restrict_self(fd, 0) == -1)
+	if (landlock_restrict_self(fd, opts->restrict_self_flags) == -1)
 		err(SETPRIV_EXIT_PRIVERR, _("landlock_restrict_self failed"));
 }
 
@@ -381,6 +403,7 @@ void usage_landlock(FILE *out)
 	fputs(USAGE_ARGUMENTS, out);
 	fputs(_(" <access> is a landlock access; syntax is <category>[:<right>, ...>]\n"), out);
 	fputs(_(" <rule> is a landlock rule; syntax is <type>:<right>:<argument>\n"), out);
+	fputs(_(" <flags> is a comma separated list of landlock restrict-self flags\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock access categories are:\n"), out);
@@ -414,5 +437,12 @@ void usage_landlock(FILE *out)
 	for (i = 0; i < ARRAY_SIZE(landlock_scope); i++) {
 		fprintf(out, "  %20s - %s\n", landlock_scope[i].type,
 					_(landlock_scope[i].help));
+	}
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(_(" available landlock restrict-self flags are:\n"), out);
+	for (i = 0; i < ARRAY_SIZE(landlock_restrict_self_flags); i++) {
+		fprintf(out, "  %20s - %s\n", landlock_restrict_self_flags[i].type,
+					_(landlock_restrict_self_flags[i].help));
 	}
 }

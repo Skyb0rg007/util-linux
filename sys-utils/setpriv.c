@@ -173,6 +173,8 @@ static void __attribute__((__noreturn__)) usage(void)
 	fputs(_(" --apparmor-profile <pr>     set AppArmor profile\n"), out);
 	fputs(_(" --landlock-access <access>  add Landlock access\n"), out);
 	fputs(_(" --landlock-rule <rule>      add Landlock rule\n"), out);
+	fputs(_(" --landlock-restrict-self <flags>\n"
+	        "                             set Landlock restrict-self flags\n"), out);
 	fputs(_(" --seccomp-filter <file>     load seccomp filter from file\n"), out);
 	fputs(_(" --reset-env                 clear all environment and initialize\n"
 		"                               HOME, SHELL, USER, LOGNAME and PATH\n"), out);
@@ -874,6 +876,7 @@ int main(int argc, char **argv)
 		APPARMOR_PROFILE,
 		LANDLOCK_ACCESS,
 		LANDLOCK_RULE,
+		LANDLOCK_RESTRICT_SELF,
 		SECCOMP_FILTER,
 		RESET_ENV
 	};
@@ -903,6 +906,7 @@ int main(int argc, char **argv)
 		{ "apparmor-profile", required_argument, NULL, APPARMOR_PROFILE },
 		{ "landlock-access",  required_argument, NULL, LANDLOCK_ACCESS  },
 		{ "landlock-rule",    required_argument, NULL, LANDLOCK_RULE    },
+		{ "landlock-restrict-self", required_argument, NULL, LANDLOCK_RESTRICT_SELF },
 		{ "seccomp-filter",   required_argument, NULL, SECCOMP_FILTER   },
 		{ "help",             no_argument,       NULL, 'h'              },
 		{ "reset-env",        no_argument,       NULL, RESET_ENV,       },
@@ -1071,6 +1075,9 @@ int main(int argc, char **argv)
 			break;
 		case LANDLOCK_RULE:
 			parse_landlock_rule(&opts.landlock, optarg);
+			break;
+		case LANDLOCK_RESTRICT_SELF:
+			parse_landlock_restrict_self(&opts.landlock, optarg);
 			break;
 		case SECCOMP_FILTER:
 			if (opts.seccomp_filter)

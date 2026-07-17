@@ -79,4 +79,18 @@ else
 fi
 ts_finalize_subtest
 
+ts_init_subtest "restrict-self"
+if "$TS_CMD_SETPRIV" --landlock-abi 7-1000 \
+	--landlock-restrict-self log-new-exec-on,log-subdomains-off \
+	--landlock-access fs --landlock-rule path-beneath::/ true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-restrict-self log-new-exec-on,log-subdomains-off \
+		--landlock-access fs \
+		--landlock-rule path-beneath::/ \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock restrict-self logging support (requires ABI 7)"
+fi
+ts_finalize_subtest
+
 ts_finalize
