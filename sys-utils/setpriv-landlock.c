@@ -526,6 +526,28 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	uint64_t fs_mask = UINT64_MAX;
 	uint64_t net_mask = UINT64_MAX;
 
+	/* A rule only refines an access category that is actually handled, so
+	 * reject a rule whose category was never requested with
+	 * --landlock-access; otherwise the kernel rejects it with a generic
+	 * error, or a rule-only invocation is silently ignored. */
+	list_for_each(entry, &opts->rules) {
+		rule = list_entry(entry, struct landlock_rule_entry, head);
+		switch (rule->rule_type) {
+		case LANDLOCK_RULE_PATH_BENEATH:
+			if (!access_fs)
+				errx(SETPRIV_EXIT_PRIVERR,
+				     _("landlock path-beneath rule requires a filesystem access (--landlock-access fs)"));
+			break;
+		case LANDLOCK_RULE_NET_PORT:
+			if (!access_net)
+				errx(SETPRIV_EXIT_PRIVERR,
+				     _("landlock net-port rule requires a network access (--landlock-access net)"));
+			break;
+		default:
+			abort();
+		}
+	}
+
 	if (!access_fs && !access_net && !scoped)
 		return;
 

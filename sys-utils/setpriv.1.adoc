@@ -168,6 +168,11 @@ Leaving _$access_ empty (e.g. *path-beneath::/boot*) grants every right this
 version of *setpriv* knows about, the same wildcard used by the bare
 *--landlock-access* categories; rights the running kernel does not support
 are silently dropped from it unless an ABI is pinned with *--landlock-abi*.
++
+A rule only refines an access category that is already handled, so each rule
+requires the matching *--landlock-access* category: *path-beneath* requires
+*fs* and *net-port* requires *net*. *setpriv* fails if a rule is given without
+its category.
 
 *--landlock-restrict-self* _flags_::
 

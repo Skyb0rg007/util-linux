@@ -149,4 +149,21 @@ else
 fi
 ts_finalize_subtest
 
+ts_init_subtest "rule-without-access-fails"
+if "$TS_CMD_SETPRIV" --landlock-rule path-beneath:read-file:/ true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "rule-category-mismatch-fails"
+if "$TS_CMD_SETPRIV" --landlock-access net \
+	--landlock-rule path-beneath:read-file:/ true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
 ts_finalize
