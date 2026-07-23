@@ -36,13 +36,13 @@ ts_finalize_subtest
 
 ts_init_subtest "partial-access-fail"
 "$TS_CMD_SETPRIV" --landlock-access \
-	fs:write cp /dev/null /dev/zero \
+	fs:write-file cp /dev/null /dev/zero \
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
 
 ts_init_subtest "partial-access-success"
 "$TS_CMD_SETPRIV" \
-	--landlock-access fs:write --landlock-rule path-beneath:write:/dev/zero \
+	--landlock-access fs:write-file --landlock-rule path-beneath:write-file:/dev/zero \
 	cp /dev/null /dev/zero \
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
@@ -59,6 +59,111 @@ ts_init_subtest "wildcard-access"
 	--landlock-rule path-beneath::/ \
 	true \
 	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "net-access"
+"$TS_CMD_SETPRIV" --landlock-access net \
+	--landlock-rule net-port:bind-tcp,connect-tcp:80 \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "scope-access"
+if "$TS_CMD_SETPRIV" --landlock-abi 6-1000 \
+	--landlock-access scope:signal,abstract-unix-socket true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-access scope:signal,abstract-unix-socket \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock scope support (requires ABI 6)"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "restrict-self"
+if "$TS_CMD_SETPRIV" --landlock-abi 7-1000 \
+	--landlock-restrict-self log-new-exec-on,log-subdomains-off \
+	--landlock-access fs --landlock-rule path-beneath::/ true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-restrict-self log-new-exec-on,log-subdomains-off \
+		--landlock-access fs \
+		--landlock-rule path-beneath::/ \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock restrict-self logging support (requires ABI 7)"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "quiet-access"
+if "$TS_CMD_SETPRIV" --landlock-access fs-quiet true &> /dev/null; then
+	"$TS_CMD_SETPRIV" --landlock-access fs-quiet:write-file \
+		--landlock-rule path-beneath-quiet:write-file:/dev/zero \
+		true \
+		&> "$TS_OUTPUT"
+else
+	ts_skip "no landlock quiet-rule support (requires ABI 10)"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "abi-range-success"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1000 --landlock-access fs:execute,read-file \
+	--landlock-rule path-beneath:execute,read-file:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-below-minimum-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 1000 --landlock-access fs:execute true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "abi-above-maximum-caps"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1 --landlock-access fs:execute,read-file \
+	--landlock-rule path-beneath:execute,read-file:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-explicit-within-max-degrades"
+"$TS_CMD_SETPRIV" --landlock-abi 1-1000 --landlock-access fs:execute,resolve-unix \
+	--landlock-rule path-beneath:execute:/ \
+	true \
+	&> "$TS_OUTPUT"
+ts_finalize_subtest
+
+ts_init_subtest "abi-explicit-exceeds-max-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 1-8 --landlock-access fs:resolve-unix true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "abi-zero-fails"
+if "$TS_CMD_SETPRIV" --landlock-abi 0 --landlock-access fs:execute true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "rule-without-access-fails"
+if "$TS_CMD_SETPRIV" --landlock-rule path-beneath:read-file:/ true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
+ts_finalize_subtest
+
+ts_init_subtest "rule-category-mismatch-fails"
+if "$TS_CMD_SETPRIV" --landlock-access net \
+	--landlock-rule path-beneath:read-file:/ true &> /dev/null; then
+	echo "unexpected success" > "$TS_OUTPUT"
+else
+	: > "$TS_OUTPUT"
+fi
 ts_finalize_subtest
 
 ts_finalize

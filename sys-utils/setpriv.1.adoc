@@ -113,10 +113,35 @@ Block all file deletions and directory creations:
 +
 *setpriv --landlock-access fs:remove-file,make-dir*
 +
+Block all network access except what is explicitly allowed by *--landlock-rule*:
++
+*setpriv --landlock-access net*
++
+Restrict IPC so that signals and abstract UNIX socket connections cannot reach
+processes outside of the sandbox's own Landlock domain (unlike *fs* and *net*,
+*scope* accesses cannot be selectively re-allowed with *--landlock-rule*):
++
+*setpriv --landlock-access scope*
++
+Any of *fs*, *net* and *scope* also accept a "-quiet" suffix (e.g. *fs-quiet*)
+which additionally suppresses audit logging for denied accesses matching the
+given rights; this requires Landlock ABI 10 and *setpriv* fails if the
+running kernel does not support it. See *--landlock-abi* below.
++
 For a complete set of supported access categories use *setpriv --help*.
 +
-The generic placeholder "fs" is subject to change and may be extended in future versions
-to support new access types.
+The generic placeholders "fs", "net" and "scope" are subject to change and may
+be extended in future versions to support new access types.
++
+If a right, rule, or flag is named explicitly and the running kernel's
+Landlock ABI does not support it, *setpriv* fails instead of silently applying
+a weaker sandbox. The bare "fs", "net" and "scope" placeholders (with no
+explicit right list) are the exception: since they pull in every right this
+version of *setpriv* knows about, including ones added by very recent kernel
+releases, rights the running kernel does not support are dropped from them
+silently, so that a single command line using these bare forms can remain
+portable across kernel versions. Use *--landlock-abi* to pin an exact ABI (or
+range) instead of relying on this leniency.
 
 *--landlock-rule* _rule_::
 
@@ -129,6 +154,61 @@ The syntax is as follows:
 For example grant file read access to everything under */boot*:
 +
 *--landlock-rule path-beneath:read-file:/boot*
++
+Or allow outgoing TCP connections to port 443:
++
+*--landlock-rule net-port:connect-tcp:443*
++
+The rule types *path-beneath* and *net-port* also have a "-quiet" variant
+(e.g. *path-beneath-quiet*) which suppresses audit logging for denied
+accesses to that particular object; this requires Landlock ABI 10 and
+*setpriv* fails if the running kernel does not support it.
++
+Leaving _$access_ empty (e.g. *path-beneath::/boot*) grants every right this
+version of *setpriv* knows about, the same wildcard used by the bare
+*--landlock-access* categories; rights the running kernel does not support
+are silently dropped from it unless an ABI is pinned with *--landlock-abi*.
++
+A rule only refines an access category that is already handled, so each rule
+requires the matching *--landlock-access* category: *path-beneath* requires
+*fs* and *net-port* requires *net*. *setpriv* fails if a rule is given without
+its category.
+
+*--landlock-restrict-self* _flags_::
+
+Set flags controlling how the enforced Landlock ruleset behaves, as a comma
+separated list. Available flags include *log-same-exec-off*,
+*log-new-exec-on* and *log-subdomains-off*, which adjust audit logging of
+denied accesses. Not all flags are supported by every kernel's Landlock ABI;
+*setpriv* fails if a requested flag is not supported by the running kernel.
++
+For a complete list of supported flags use *setpriv --help*.
+
+*--landlock-abi* _abi_|_min_-_max_::
+
+Require the running kernel to support at least Landlock ABI _min_ (or _abi_,
+for a bare value); *setpriv* fails immediately if it does not. _max_ (or
+_abi_, for a bare value) is not a second requirement: a kernel newer than it
+is perfectly fine. Instead, every access, rule, quiet-suffix and
+restrict-self flag is masked as if the kernel were exactly ABI _max_, even
+if it actually supports more -- including rights and flags that were named
+explicitly, unlike the default behavior described above. This matters
+because a bare value or range only reflects what the person who wrote the
+command line knew about at the time: a right added by a Landlock ABI newer
+than _max_ is one they had no way to ask for, and silently enabling it just
+because the kernel happens to support it would be exactly the kind of
+unnoticed behavior change --landlock-abi exists to prevent. This gives a
+reproducible way to pin a sandbox to a known-good ABI instead of relying on
+the default leniency for the bare "fs"/"net"/"scope" wildcards.
++
+Masking against _max_ this way only degrades a right, rule, quiet-suffix or
+restrict-self flag silently when _max_ itself could have provided it and the
+*running* kernel merely falls short. If _max_ itself is too low for something
+named explicitly (e.g. *--landlock-abi 4-6* together with
+*--landlock-access fs:resolve-unix*, a right added at ABI 9), *setpriv* fails
+immediately regardless of the running kernel's actual ABI, since that is a
+contradiction in the command line itself rather than a compatibility gap to
+paper over.
 
 *--seccomp-filter* _file_::
 

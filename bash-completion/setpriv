@@ -94,14 +94,129 @@ _setpriv_module()
 			return 0
 			;;
 		'--landlock-access')
-			# FIXME: how to list landlock accesses?
-			COMPREPLY=( $(compgen -W "access" -- $cur) )
-			return 0
+			local prefix realcur category listpart ACCESS_ALL ACCESS WORD
+			case $cur in
+				*:*)
+					category="${cur%%:*}"
+					case $category in
+						fs|fs-quiet)
+							# Keep in sync with landlock_access_fs[] in sys-utils/setpriv-landlock.c.
+							ACCESS_ALL="execute write-file read-file read-dir remove-dir remove-file make-char make-dir make-reg make-sock make-fifo make-block make-sym refer truncate ioctl-dev resolve-unix"
+							;;
+						net|net-quiet)
+							# Keep in sync with landlock_access_net[] in sys-utils/setpriv-landlock.c.
+							ACCESS_ALL="bind-tcp connect-tcp bind-udp connect-send-udp"
+							;;
+						scope|scope-quiet)
+							# Keep in sync with landlock_scope[] in sys-utils/setpriv-landlock.c.
+							ACCESS_ALL="abstract-unix-socket signal"
+							;;
+						*)
+							return 0
+							;;
+					esac
+					listpart="${cur#*:}"
+					realcur="${listpart##*,}"
+					prefix="${cur%$realcur}"
+					for WORD in $ACCESS_ALL; do
+						if ! [[ $prefix == *"$WORD"* ]]; then
+							ACCESS="$WORD ${ACCESS:-""}"
+						fi
+					done
+					compopt -o nospace
+					COMPREPLY=( $(compgen -P "$prefix" -W "$ACCESS" -S ',' -- $realcur) )
+					return 0
+					;;
+				*)
+					compopt -o nospace
+					COMPREPLY=( $(compgen -W "fs fs-quiet net net-quiet scope scope-quiet" -- $cur) )
+					return 0
+					;;
+			esac
 			;;
 		'--landlock-rule')
-			# FIXME: how to list landlock rules?
-			COMPREPLY=( $(compgen -W "rule" -- $cur) )
+			local prefix realcur listpart type rest arg RULE_ALL RULE WORD
+			case $cur in
+				*:*:*)
+					type="${cur%%:*}"
+					rest="${cur#*:}"
+					arg="${rest#*:}"
+					prefix="${cur%$arg}"
+					case $type in
+						'path-beneath'|'path-beneath-quiet')
+							compopt -o filenames -o nospace
+							COMPREPLY=( $(compgen -f -P "$prefix" -- "$arg") )
+							;;
+						'net-port'|'net-port-quiet')
+							: # no useful completion for a raw port number
+							;;
+					esac
+					return 0
+					;;
+				*:*)
+					type="${cur%%:*}"
+					case $type in
+						'path-beneath'|'path-beneath-quiet')
+							# Keep in sync with landlock_access_fs[] in sys-utils/setpriv-landlock.c.
+							RULE_ALL="execute write-file read-file read-dir remove-dir remove-file make-char make-dir make-reg make-sock make-fifo make-block make-sym refer truncate ioctl-dev resolve-unix"
+							;;
+						'net-port'|'net-port-quiet')
+							# Keep in sync with landlock_access_net[] in sys-utils/setpriv-landlock.c.
+							RULE_ALL="bind-tcp connect-tcp bind-udp connect-send-udp"
+							;;
+						*)
+							return 0
+							;;
+					esac
+					listpart="${cur#*:}"
+					realcur="${listpart##*,}"
+					prefix="${cur%$realcur}"
+					for WORD in $RULE_ALL; do
+						if ! [[ $prefix == *"$WORD"* ]]; then
+							RULE="$WORD ${RULE:-""}"
+						fi
+					done
+					compopt -o nospace
+					COMPREPLY=( $(compgen -P "$prefix" -W "$RULE" -S ',' -- $realcur) )
+					return 0
+					;;
+				*)
+					compopt -o nospace
+					COMPREPLY=( $(compgen -W "path-beneath path-beneath-quiet net-port net-port-quiet" -- $cur) )
+					return 0
+					;;
+			esac
+			;;
+		'--landlock-restrict-self')
+			local prefix realcur FLAGS_ALL FLAGS WORD
+			realcur="${cur##*,}"
+			prefix="${cur%$realcur}"
+			FLAGS_ALL="log-same-exec-off log-new-exec-on log-subdomains-off"
+			for WORD in $FLAGS_ALL; do
+				if ! [[ $prefix == *"$WORD"* ]]; then
+					FLAGS="$WORD ${FLAGS:-""}"
+				fi
+			done
+			compopt -o nospace
+			COMPREPLY=( $(compgen -P "$prefix" -W "$FLAGS" -S ',' -- $realcur) )
 			return 0
+			;;
+		'--landlock-abi')
+			local prefix realcur ABI_ALL
+			ABI_ALL="1 2 3 4 5 6 7 8 9 10"
+			case $cur in
+				*-*)
+					realcur="${cur#*-}"
+					prefix="${cur%$realcur}"
+					COMPREPLY=( $(compgen -P "$prefix" -W "$ABI_ALL" -- "$realcur") )
+					return 0
+					;;
+				*)
+					compopt -o nospace
+					COMPREPLY=( $(compgen -W "$ABI_ALL" -- "$cur") )
+					return 0
+					;;
+			esac
 			;;
 		'--seccomp-filter')
 			COMPREPLY=( $(compgen -f -- $cur) )
@@ -137,6 +252,8 @@ _setpriv_module()
 				--apparmor-profile
 				--landlock-access
 				--landlock-rule
+				--landlock-restrict-self
+				--landlock-abi
 				--seccomp-filter
 				--help
 				--version"
