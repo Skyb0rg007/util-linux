@@ -105,6 +105,11 @@ Request a particular AppArmor profile (using a transition on exec). This will fa
 Enable landlock restrictions for a specific set of system accesses.
 To allow specific subgroups of accesses use *--landlock-rule*.
 +
+The syntax is *$category*[**:**__$right__[**,**__...__]]. Without any rights the whole
+category is restricted. The available categories are *fs* (filesystem accesses,
+for example _read-file_ or _make-dir_) and *net* (TCP port accesses, that is
+_bind-tcp_ and _connect-tcp_).
++
 Block all filesystem access:
 +
 *setpriv --landlock-access fs*
@@ -113,12 +118,16 @@ Block all file deletions and directory creations:
 +
 *setpriv --landlock-access fs:remove-file,make-dir*
 +
+Block outgoing TCP connections:
++
+*setpriv --landlock-access net:connect-tcp*
++
 An access right that the running kernel does not support is rejected; use
 *--landlock-support* to inspect what is available. For a complete set of
 supported access categories use *setpriv --help*.
 +
-The generic placeholder "fs" is subject to change and may be extended in future versions
-to support new access types.
+The set of access categories is subject to change and may be extended in future
+versions to support new access types.
 
 *--landlock-rule* _rule_::
 
@@ -131,13 +140,23 @@ The syntax is as follows:
 For example grant file read access to everything under */boot*:
 +
 *--landlock-rule path-beneath:read-file:/boot*
++
+And grant the right to connect to port 443:
++
+*--landlock-rule net-port:connect-tcp:443*
++
+The available rule types are *path-beneath*, whose _$rulearg_ is a path and
+which relaxes the *fs* access category, and *net-port*, whose _$rulearg_ is a
+TCP port number and which relaxes the *net* access category. A rule requires
+its access category to be restricted by *--landlock-access*.
 
 *--landlock-support*::
 List the landlock ABI version supported by the running kernel, together with the access
 categories, rights, and rule types that *setpriv* understands. Must be specified alone.
 
 *--list-landlock-access*::
-List the landlock access categories supported by *--landlock-access* and *--landlock-rule*.
+List the landlock access categories that are usable with *--landlock-access* and
+*--landlock-rule* on the running kernel.
 
 *--list-landlock-rights* _access_::
 List the rights of the given landlock access category that are supported by the running

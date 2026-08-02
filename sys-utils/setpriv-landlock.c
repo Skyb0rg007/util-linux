@@ -26,12 +26,18 @@ enum landlock_rule_type {
 
 struct landlock_ruleset_attr {
 	uint64_t handled_access_fs;
+	uint64_t handled_access_net;
 };
 
 struct landlock_path_beneath_attr {
 	uint64_t allowed_access;
 	int32_t parent_fd;
 } __attribute__((packed));
+
+struct landlock_net_port_attr {
+	uint64_t allowed_access;
+	uint64_t port;
+};
 
 #define LANDLOCK_CREATE_RULESET_VERSION			(1U << 0)
 
@@ -52,6 +58,9 @@ struct landlock_path_beneath_attr {
 #define LANDLOCK_ACCESS_FS_TRUNCATE			(1ULL << 14)
 #define LANDLOCK_ACCESS_FS_IOCTL_DEV			(1ULL << 15)
 #define LANDLOCK_ACCESS_FS_RESOLVE_UNIX			(1ULL << 16)
+
+#define LANDLOCK_ACCESS_NET_BIND_TCP			(1ULL << 0)
+#define LANDLOCK_ACCESS_NET_CONNECT_TCP			(1ULL << 1)
 
 static inline int landlock_create_ruleset(
 		const struct landlock_ruleset_attr *attr,
@@ -80,6 +89,7 @@ struct landlock_rule_entry {
 	enum landlock_rule_type rule_type;
 	union {
 		struct landlock_path_beneath_attr path_beneath_attr;
+		struct landlock_net_port_attr net_port_attr;
 	};
 };
 
@@ -109,6 +119,11 @@ static const struct landlock_access_right landlock_access_fs[] = {
 	{ LANDLOCK_ACCESS_FS_RESOLVE_UNIX, "resolve-unix", N_("connect(2) or bind(2) a pathname UNIX domain socket") },
 };
 
+static const struct landlock_access_right landlock_access_net[] = {
+	{ LANDLOCK_ACCESS_NET_BIND_TCP,    "bind-tcp",     N_("bind a TCP socket to a local port") },
+	{ LANDLOCK_ACCESS_NET_CONNECT_TCP, "connect-tcp",  N_("connect a TCP socket to a remote port") },
+};
+
 /* cumulative rights supported by each landlock ABI version, indexed by (abi - 1) */
 static const uint64_t landlock_access_fs_mask[] = {
 	/* ABI 1 */ (LANDLOCK_ACCESS_FS_MAKE_SYM << 1) - 1,
@@ -120,6 +135,13 @@ static const uint64_t landlock_access_fs_mask[] = {
 	/* ABI 7 */ (LANDLOCK_ACCESS_FS_IOCTL_DEV << 1) - 1,
 	/* ABI 8 */ (LANDLOCK_ACCESS_FS_IOCTL_DEV << 1) - 1,
 	/* ABI 9 */ (LANDLOCK_ACCESS_FS_RESOLVE_UNIX << 1) - 1,
+};
+
+static const uint64_t landlock_access_net_mask[] = {
+	/* ABI 1 */ 0,
+	/* ABI 2 */ 0,
+	/* ABI 3 */ 0,
+	/* ABI 4 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
 };
 
 static int supported_landlock_abi(void)
@@ -151,6 +173,12 @@ static uint64_t landlock_fs_abi_mask(void)
 				 ARRAY_SIZE(landlock_access_fs_mask));
 }
 
+static uint64_t landlock_net_abi_mask(void)
+{
+	return landlock_abi_mask(landlock_access_net_mask,
+				 ARRAY_SIZE(landlock_access_net_mask));
+}
+
 static long landlock_right_to_mask(const struct landlock_access_right *rights,
 				   size_t nrights, const char *str, size_t len)
 {
@@ -166,6 +194,12 @@ static long landlock_fs_right_to_mask(const char *str, size_t len)
 {
 	return landlock_right_to_mask(landlock_access_fs,
 				      ARRAY_SIZE(landlock_access_fs), str, len);
+}
+
+static long landlock_net_right_to_mask(const char *str, size_t len)
+{
+	return landlock_right_to_mask(landlock_access_net,
+				      ARRAY_SIZE(landlock_access_net), str, len);
 }
 
 /* reject rights the running kernel does not know about, they would otherwise
@@ -215,6 +249,20 @@ static uint64_t parse_landlock_fs_rights(const char *list)
 	return r;
 }
 
+static uint64_t parse_landlock_net_rights(const char *list)
+{
+	unsigned long r = 0;
+
+	if (string_to_bitmask(list, &r, landlock_net_right_to_mask))
+		errx(EXIT_FAILURE,
+		     _("could not parse landlock net access: %s"), list);
+
+	check_landlock_abi_support("net", landlock_access_net,
+				   ARRAY_SIZE(landlock_access_net),
+				   landlock_net_abi_mask(), r);
+	return r;
+}
+
 /* match "<name>" or "<name>:<rights>" and return the (possibly empty) right
  * list, or NULL when str names a different access */
 static const char *landlock_access_arg(const char *str, const char *name)
@@ -243,6 +291,30 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 			opts->access_fs |= parse_landlock_fs_rights(rights);
 		return;
 	}
+
+	rights = landlock_access_arg(str, "net");
+	if (rights) {
+		if (rights[0] == '\0')
+			opts->access_net |= landlock_all_rights("net", landlock_net_abi_mask());
+		else
+			opts->access_net |= parse_landlock_net_rights(rights);
+		return;
+	}
+}
+
+/* split the "<rights>:<argument>" tail of a rule; *rights_part is a newly
+ * allocated, possibly empty, right list which the caller has to free */
+static const char *landlock_rule_split(const char *str, const char *rights,
+				       char **rights_part)
+{
+	const char *arg;
+
+	arg = strchr(rights, ':');
+	if (!arg)
+		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
+
+	*rights_part = xstrndup(rights, arg - rights);
+	return arg + 1;
 }
 
 void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
@@ -254,33 +326,48 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 	int parent_fd;
 
 	rights = ul_startswith(str, "path-beneath:");
-	if (!rights)
-		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
+	if (rights) {
+		arg = landlock_rule_split(str, rights, &rights_part);
+		/* without rights, the rule grants back all the ruleset handles */
+		if (rights_part[0] != '\0')
+			allowed_access = parse_landlock_fs_rights(rights_part);
+		else
+			allowed_access = 0;
+		free(rights_part);
 
-	arg = strchr(rights, ':');
-	if (!arg)
-		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
+		parent_fd = open(arg, O_RDONLY | O_PATH | O_CLOEXEC);
+		if (parent_fd == -1)
+			err(EXIT_FAILURE, _("could not open file for landlock: %s"), arg);
 
-	/* without rights, the rule grants back everything the ruleset handles */
-	rights_part = xstrndup(rights, arg - rights);
-	if (rights_part[0] != '\0')
-		allowed_access = parse_landlock_fs_rights(rights_part);
-	else
-		allowed_access = 0;
-	free(rights_part);
+		rule = xmalloc(sizeof(*rule));
+		rule->rule_type = LANDLOCK_RULE_PATH_BENEATH;
+		rule->path_beneath_attr.allowed_access = allowed_access;
+		rule->path_beneath_attr.parent_fd = parent_fd;
 
-	arg++;
+		list_add(&rule->head, &opts->rules);
+		return;
+	}
 
-	parent_fd = open(arg, O_RDONLY | O_PATH | O_CLOEXEC);
-	if (parent_fd == -1)
-		err(EXIT_FAILURE, _("could not open file for landlock: %s"), arg);
+	rights = ul_startswith(str, "net-port:");
+	if (rights) {
+		arg = landlock_rule_split(str, rights, &rights_part);
+		if (rights_part[0] != '\0')
+			allowed_access = parse_landlock_net_rights(rights_part);
+		else
+			allowed_access = 0;
+		free(rights_part);
 
-	rule = xmalloc(sizeof(*rule));
-	rule->rule_type = LANDLOCK_RULE_PATH_BENEATH;
-	rule->path_beneath_attr.allowed_access = allowed_access;
-	rule->path_beneath_attr.parent_fd = parent_fd;
+		rule = xmalloc(sizeof(*rule));
+		rule->rule_type = LANDLOCK_RULE_NET_PORT;
+		rule->net_port_attr.allowed_access = allowed_access;
+		rule->net_port_attr.port = strtou16_or_err(arg,
+				_("could not parse landlock port"));
 
-	list_add(&rule->head, &opts->rules);
+		list_add(&rule->head, &opts->rules);
+		return;
+	}
+
+	errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
 }
 
 void init_landlock_opts(struct setpriv_landlock_opts *opts)
@@ -300,13 +387,17 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 		if (rule->rule_type == LANDLOCK_RULE_PATH_BENEATH && !opts->access_fs)
 			errx(EXIT_FAILURE,
 				_("landlock path-beneath rule requires a filesystem access restriction (--landlock-access fs)"));
+		if (rule->rule_type == LANDLOCK_RULE_NET_PORT && !opts->access_net)
+			errx(EXIT_FAILURE,
+				_("landlock net-port rule requires a network access restriction (--landlock-access net)"));
 	}
 
-	if (!opts->access_fs)
+	if (!opts->access_fs && !opts->access_net)
 		return;
 
 	const struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = opts->access_fs,
+		.handled_access_net = opts->access_net,
 	};
 
 	fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
@@ -315,16 +406,25 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 
 	list_for_each(entry, &opts->rules) {
 		struct landlock_path_beneath_attr path_beneath_attr;
+		struct landlock_net_port_attr net_port_attr;
+		const void *rule_attr;
 
 		rule = list_entry(entry, struct landlock_rule_entry, head);
 
-		assert(rule->rule_type == LANDLOCK_RULE_PATH_BENEATH);
+		if (rule->rule_type == LANDLOCK_RULE_PATH_BENEATH) {
+			path_beneath_attr = rule->path_beneath_attr;
+			if (!path_beneath_attr.allowed_access)
+				path_beneath_attr.allowed_access = opts->access_fs;
+			rule_attr = &path_beneath_attr;
+		} else {
+			assert(rule->rule_type == LANDLOCK_RULE_NET_PORT);
+			net_port_attr = rule->net_port_attr;
+			if (!net_port_attr.allowed_access)
+				net_port_attr.allowed_access = opts->access_net;
+			rule_attr = &net_port_attr;
+		}
 
-		path_beneath_attr = rule->path_beneath_attr;
-		if (!path_beneath_attr.allowed_access)
-			path_beneath_attr.allowed_access = opts->access_fs;
-
-		ret = landlock_add_rule(fd, rule->rule_type, &path_beneath_attr, 0);
+		ret = landlock_add_rule(fd, rule->rule_type, rule_attr, 0);
 		if (ret == -1)
 			err(SETPRIV_EXIT_PRIVERR, _("adding landlock rule failed"));
 	}
@@ -362,6 +462,8 @@ void usage_landlock(FILE *out)
 
 	width = max(width, landlock_rights_width(landlock_access_fs,
 						 ARRAY_SIZE(landlock_access_fs)));
+	width = max(width, landlock_rights_width(landlock_access_net,
+						 ARRAY_SIZE(landlock_access_net)));
 
 	fputs(USAGE_ARGUMENTS, out);
 	fputs(_(" <access> is a landlock access; syntax is <access>[:<right>,...]\n"), out);
@@ -372,11 +474,19 @@ void usage_landlock(FILE *out)
 	/* TRANSLATORS: Keep *{path-beneath}* untranslated, it's a type name */
 	fprintf(out, "  %*s - %s\n", width, "path-beneath",
 			_("filesystem based rule; <argument> is a path"));
+	/* TRANSLATORS: Keep *{net-port}* untranslated, it's a type name */
+	fprintf(out, "  %*s - %s\n", width, "net-port",
+			_("network based rule; <argument> is a TCP port"));
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock 'fs' rights are:\n"), out);
 	print_landlock_rights(out, landlock_access_fs,
 			      ARRAY_SIZE(landlock_access_fs), width);
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(_(" available landlock 'net' rights are:\n"), out);
+	print_landlock_rights(out, landlock_access_net,
+			      ARRAY_SIZE(landlock_access_net), width);
 }
 
 static void print_landlock_right_names(const struct landlock_access_right *rights,
@@ -393,17 +503,23 @@ void list_landlock_support(void)
 {
 	printf("ABI: %d\n", supported_landlock_abi());
 
-	printf("access: fs\n");
+	printf("access: fs net\n");
 
 	printf("fs rights:");
 	print_landlock_right_names(landlock_access_fs, ARRAY_SIZE(landlock_access_fs));
 
-	printf("rules: path-beneath\n");
+	printf("net rights:");
+	print_landlock_right_names(landlock_access_net, ARRAY_SIZE(landlock_access_net));
+
+	printf("rules: path-beneath net-port\n");
 }
 
 void list_landlock_access(void)
 {
-	printf("fs\n");
+	if (landlock_fs_abi_mask())
+		printf("fs\n");
+	if (landlock_net_abi_mask())
+		printf("net\n");
 }
 
 static void print_landlock_supported_rights(const struct landlock_access_right *rights,
@@ -422,6 +538,10 @@ void list_landlock_rights(const char *access)
 		print_landlock_supported_rights(landlock_access_fs,
 						ARRAY_SIZE(landlock_access_fs),
 						landlock_fs_abi_mask());
+	else if (strcmp(access, "net") == 0)
+		print_landlock_supported_rights(landlock_access_net,
+						ARRAY_SIZE(landlock_access_net),
+						landlock_net_abi_mask());
 	else
 		errx(EXIT_FAILURE, _("unknown landlock access: %s"), access);
 }

@@ -75,4 +75,58 @@ ts_init_subtest "wildcard-partial-access-reversed"
 	&> "$TS_OUTPUT"
 ts_finalize_subtest
 
+# The "net" access category needs landlock ABI 4.
+if "$TS_CMD_SETPRIV" --landlock-access net true &> /dev/null; then
+
+	ts_init_subtest "net-rule-without-access"
+	"$TS_CMD_SETPRIV" --landlock-rule net-port:bind-tcp:8080 \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "net-invalid-port"
+	"$TS_CMD_SETPRIV" --landlock-access net \
+		--landlock-rule net-port:bind-tcp:99999 \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "net-combined-access"
+	"$TS_CMD_SETPRIV" --landlock-access fs:execute --landlock-access net \
+		--landlock-rule path-beneath:execute:/ \
+		--landlock-rule net-port:connect-tcp:443 \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	# A blocked and a refused connection both just make bash fail, so the
+	# two are told apart by the errno. Whether anything listens on the port
+	# does not matter, only landlock returns EACCES. Skip the subtests when
+	# bash was built without /dev/tcp redirection support.
+	if ! bash -c 'exec 3<>/dev/tcp/127.0.0.1/9' 2>&1 \
+			| grep -qi 'no such file or directory'; then
+
+		ts_init_subtest "net-connect-blocked"
+		if "$TS_CMD_SETPRIV" --landlock-access net:connect-tcp \
+				bash -c 'exec 3<>/dev/tcp/127.0.0.1/9' 2>&1 \
+				| grep -qi 'permission denied'; then
+			echo "connect blocked" &> "$TS_OUTPUT"
+		else
+			echo "connect allowed" &> "$TS_OUTPUT"
+		fi
+		ts_finalize_subtest
+
+		ts_init_subtest "net-connect-allowed"
+		if "$TS_CMD_SETPRIV" --landlock-access net:connect-tcp \
+				--landlock-rule net-port:connect-tcp:9 \
+				bash -c 'exec 3<>/dev/tcp/127.0.0.1/9' 2>&1 \
+				| grep -qi 'permission denied'; then
+			echo "connect blocked" &> "$TS_OUTPUT"
+		else
+			echo "connect allowed" &> "$TS_OUTPUT"
+		fi
+		ts_finalize_subtest
+	fi
+fi
+
 ts_finalize
