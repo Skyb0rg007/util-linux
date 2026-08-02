@@ -113,7 +113,9 @@ Block all file deletions and directory creations:
 +
 *setpriv --landlock-access fs:remove-file,make-dir*
 +
-For a complete set of supported access categories use *setpriv --help*.
+An access right that the running kernel does not support is rejected; use
+*--landlock-support* to inspect what is available. For a complete set of
+supported access categories use *setpriv --help*.
 +
 The generic placeholder "fs" is subject to change and may be extended in future versions
 to support new access types.

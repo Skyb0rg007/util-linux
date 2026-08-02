@@ -153,6 +153,39 @@ static long landlock_access_to_mask(const char *str, size_t len)
 	return -1;
 }
 
+/* reject rights the running kernel does not know about, they would otherwise
+ * only be caught by landlock_create_ruleset() with a much less helpful error */
+static void check_landlock_fs_abi_support(uint64_t value)
+{
+	uint64_t unsupported = value & ~landlock_abi_fs_mask();
+	size_t i;
+
+	if (!unsupported)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++)
+		if (landlock_access_fs[i].value & unsupported)
+			errx(EXIT_FAILURE,
+			     _("landlock fs access right is not supported by the running kernel: %s"),
+			     landlock_access_fs[i].type);
+
+	errx(EXIT_FAILURE,
+	     _("landlock fs access is not supported by the running kernel"));
+}
+
+/* all fs rights, for the form without an explicit right list */
+static uint64_t landlock_all_fs_rights(void)
+{
+	uint64_t mask = landlock_abi_fs_mask();
+
+	/* the whole access is unknown to the kernel; applying an empty mask
+	 * would silently restrict nothing at all */
+	if (!mask)
+		errx(EXIT_FAILURE,
+		     _("landlock fs access is not supported by the running kernel"));
+	return mask;
+}
+
 static uint64_t parse_landlock_fs_access(const char *list)
 {
 	unsigned long r = 0;
@@ -161,6 +194,7 @@ static uint64_t parse_landlock_fs_access(const char *list)
 		errx(EXIT_FAILURE,
 		     _("could not parse landlock fs access: %s"), list);
 
+	check_landlock_fs_abi_support(r);
 	return r;
 }
 
@@ -172,7 +206,7 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 
 	/* without argument, match all supported by the current kernel */
 	if (strcmp(str, "fs") == 0 || (type && type[0] == '\0')) {
-		opts->access_fs |= landlock_abi_fs_mask();
+		opts->access_fs |= landlock_all_fs_rights();
 		return;
 	}
 
