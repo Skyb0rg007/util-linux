@@ -183,4 +183,31 @@ if "$TS_CMD_SETPRIV" --landlock-access scoped true &> /dev/null; then
 	ts_finalize_subtest
 fi
 
+# The "restrict-self" logging flags need landlock ABI 7. Use "net" here, not
+# "fs", so that the probe itself does not block true from executing.
+if "$TS_CMD_SETPRIV" --landlock-access net --landlock-restrict-self log-same-exec-off \
+		true &> /dev/null; then
+
+	ts_init_subtest "restrict-self-without-access"
+	"$TS_CMD_SETPRIV" --landlock-restrict-self log-same-exec-off \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "restrict-self-invalid-flag"
+	"$TS_CMD_SETPRIV" --landlock-access fs \
+		--landlock-restrict-self bogus \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "restrict-self-combined"
+	"$TS_CMD_SETPRIV" --landlock-access fs:execute,read-file \
+		--landlock-rule path-beneath:execute,read-file:/ \
+		--landlock-restrict-self log-same-exec-off,log-new-exec-on,log-subdomains-off \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+fi
+
 ts_finalize

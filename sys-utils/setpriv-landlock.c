@@ -68,6 +68,11 @@ struct landlock_net_port_attr {
 #define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET		(1ULL << 0)
 #define LANDLOCK_SCOPE_SIGNAL				(1ULL << 1)
 
+#define LANDLOCK_RESTRICT_SELF_LOG_SAME_EXEC_OFF	(1ULL << 0)
+#define LANDLOCK_RESTRICT_SELF_LOG_NEW_EXEC_ON		(1ULL << 1)
+#define LANDLOCK_RESTRICT_SELF_LOG_SUBDOMAINS_OFF	(1ULL << 2)
+/* LANDLOCK_RESTRICT_SELF_TSYNC (1ULL << 3) is intentionally not exposed */
+
 static inline int landlock_create_ruleset(
 		const struct landlock_ruleset_attr *attr,
 		size_t size, uint32_t flags)
@@ -137,6 +142,12 @@ static const struct landlock_access_right landlock_scoped[] = {
 	{ LANDLOCK_SCOPE_SIGNAL,               "signal",               N_("send a signal to a process outside the sandbox") },
 };
 
+static const struct landlock_access_right landlock_restrict_self_rights[] = {
+	{ LANDLOCK_RESTRICT_SELF_LOG_SAME_EXEC_OFF,   "log-same-exec-off",   N_("stop logging denied accesses from this thread until its next execve(2)") },
+	{ LANDLOCK_RESTRICT_SELF_LOG_NEW_EXEC_ON,     "log-new-exec-on",     N_("log denied accesses from this domain after an execve(2)") },
+	{ LANDLOCK_RESTRICT_SELF_LOG_SUBDOMAINS_OFF,  "log-subdomains-off",  N_("stop logging denied accesses from nested landlock domains created within the sandbox") },
+};
+
 /* cumulative rights supported by each landlock ABI version, indexed by (abi - 1) */
 static const uint64_t landlock_access_fs_mask[] = {
 	/* ABI 1 */ (LANDLOCK_ACCESS_FS_MAKE_SYM << 1) - 1,
@@ -170,6 +181,16 @@ static const uint64_t landlock_scoped_mask[] = {
 	/* ABI 4 */ 0,
 	/* ABI 5 */ 0,
 	/* ABI 6 */ (LANDLOCK_SCOPE_SIGNAL << 1) - 1,
+};
+
+static const uint64_t landlock_restrict_self_mask[] = {
+	/* ABI 1 */ 0,
+	/* ABI 2 */ 0,
+	/* ABI 3 */ 0,
+	/* ABI 4 */ 0,
+	/* ABI 5 */ 0,
+	/* ABI 6 */ 0,
+	/* ABI 7 */ (LANDLOCK_RESTRICT_SELF_LOG_SUBDOMAINS_OFF << 1) - 1,
 };
 
 static int supported_landlock_abi(void)
@@ -213,6 +234,12 @@ static uint64_t landlock_scoped_abi_mask(void)
 				 ARRAY_SIZE(landlock_scoped_mask));
 }
 
+static uint64_t landlock_restrict_self_abi_mask(void)
+{
+	return landlock_abi_mask(landlock_restrict_self_mask,
+				 ARRAY_SIZE(landlock_restrict_self_mask));
+}
+
 static long landlock_right_to_mask(const struct landlock_access_right *rights,
 				   size_t nrights, const char *str, size_t len)
 {
@@ -240,6 +267,12 @@ static long landlock_scoped_right_to_mask(const char *str, size_t len)
 {
 	return landlock_right_to_mask(landlock_scoped,
 				      ARRAY_SIZE(landlock_scoped), str, len);
+}
+
+static long landlock_restrict_self_right_to_mask(const char *str, size_t len)
+{
+	return landlock_right_to_mask(landlock_restrict_self_rights,
+				      ARRAY_SIZE(landlock_restrict_self_rights), str, len);
 }
 
 /* reject rights the running kernel does not know about, they would otherwise
@@ -365,6 +398,20 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 	}
 }
 
+void parse_landlock_restrict_self(struct setpriv_landlock_opts *opts, const char *str)
+{
+	unsigned long r = 0;
+
+	if (string_to_bitmask(str, &r, landlock_restrict_self_right_to_mask))
+		errx(EXIT_FAILURE,
+		     _("could not parse landlock restrict-self flags: %s"), str);
+
+	check_landlock_abi_support("restrict-self", landlock_restrict_self_rights,
+				   ARRAY_SIZE(landlock_restrict_self_rights),
+				   landlock_restrict_self_abi_mask(), r);
+	opts->restrict_self |= r;
+}
+
 /* split the "<rights>:<argument>" tail of a rule; *rights_part is a newly
  * allocated, possibly empty, right list which the caller has to free */
 static const char *landlock_rule_split(const char *str, const char *rights,
@@ -455,8 +502,12 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 				_("landlock net-port rule requires a network access restriction (--landlock-access net)"));
 	}
 
-	if (!opts->access_fs && !opts->access_net && !opts->scoped)
+	if (!opts->access_fs && !opts->access_net && !opts->scoped) {
+		if (opts->restrict_self)
+			errx(EXIT_FAILURE,
+				_("landlock restrict-self flags require an access restriction (--landlock-access)"));
 		return;
+	}
 
 	const struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = opts->access_fs,
@@ -496,7 +547,7 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1)
 		err(SETPRIV_EXIT_PRIVERR, _("disallow granting new privileges for landlock failed"));
 
-	if (landlock_restrict_self(fd, 0) == -1)
+	if (landlock_restrict_self(fd, opts->restrict_self) == -1)
 		err(SETPRIV_EXIT_PRIVERR, _("landlock_restrict_self failed"));
 }
 
@@ -530,6 +581,8 @@ void usage_landlock(FILE *out)
 						 ARRAY_SIZE(landlock_access_net)));
 	width = max(width, landlock_rights_width(landlock_scoped,
 						 ARRAY_SIZE(landlock_scoped)));
+	width = max(width, landlock_rights_width(landlock_restrict_self_rights,
+						 ARRAY_SIZE(landlock_restrict_self_rights)));
 
 	fputs(USAGE_ARGUMENTS, out);
 	fputs(_(" <access> is a landlock access; syntax is <access>[:<right>,...]\n"), out);
@@ -558,6 +611,11 @@ void usage_landlock(FILE *out)
 	fputs(_(" available landlock 'scoped' rights are:\n"), out);
 	print_landlock_rights(out, landlock_scoped,
 			      ARRAY_SIZE(landlock_scoped), width);
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(_(" available landlock --landlock-restrict-self flags are:\n"), out);
+	print_landlock_rights(out, landlock_restrict_self_rights,
+			      ARRAY_SIZE(landlock_restrict_self_rights), width);
 }
 
 static void print_landlock_right_names(const struct landlock_access_right *rights,
@@ -584,6 +642,9 @@ void list_landlock_support(void)
 
 	printf("scoped rights:");
 	print_landlock_right_names(landlock_scoped, ARRAY_SIZE(landlock_scoped));
+
+	printf("restrict-self flags:");
+	print_landlock_right_names(landlock_restrict_self_rights, ARRAY_SIZE(landlock_restrict_self_rights));
 
 	printf("rules: path-beneath net-port\n");
 }
@@ -624,4 +685,11 @@ void list_landlock_rights(const char *access)
 						landlock_scoped_abi_mask());
 	else
 		errx(EXIT_FAILURE, _("unknown landlock access: %s"), access);
+}
+
+void list_landlock_restrict_self(void)
+{
+	print_landlock_supported_rights(landlock_restrict_self_rights,
+					ARRAY_SIZE(landlock_restrict_self_rights),
+					landlock_restrict_self_abi_mask());
 }

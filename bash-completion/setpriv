@@ -13,9 +13,10 @@ _setpriv_ltrim_colon_completions()
 
 _setpriv_landlock_rights()
 {
-	local cmd="$1" access="$2" prefix="$3" cur="$4"
+	local cmd="$1" prefix="$2" cur="$3"
+	shift 3
 	local realcur RIGHTS RIGHTS_ALL WORD
-	RIGHTS_ALL=$("$cmd" --list-landlock-rights "$access" 2>/dev/null) || return 1
+	RIGHTS_ALL=$("$cmd" "$@" 2>/dev/null) || return 1
 	realcur="${cur##*,}"
 	prefix+="${cur%"$realcur"}"
 	for WORD in $RIGHTS_ALL; do
@@ -144,7 +145,7 @@ _setpriv_module()
 		'--landlock-access')
 			case $cur in
 				*:*)
-					_setpriv_landlock_rights "$1" "${cur%%:*}" "${cur%%:*}:" "${cur#*:}"
+					_setpriv_landlock_rights "$1" "${cur%%:*}:" "${cur#*:}" --list-landlock-rights "${cur%%:*}"
 					;;
 				*)
 					local WORD OPTS_ACCESS
@@ -155,6 +156,11 @@ _setpriv_module()
 					COMPREPLY=( $(compgen -W "$OPTS_ACCESS" -- $cur) )
 					;;
 			esac
+			return 0
+			;;
+		'--landlock-restrict-self')
+			compopt -o nospace
+			_setpriv_landlock_rights "$1" '' "$cur" --list-landlock-restrict-self-flags
 			return 0
 			;;
 		'--landlock-rule')
@@ -173,14 +179,14 @@ _setpriv_module()
 					;;
 				path-beneath:*)
 					compopt -o nospace
-					_setpriv_landlock_rights "$1" fs 'path-beneath:' "${cur#path-beneath:}"
+					_setpriv_landlock_rights "$1" 'path-beneath:' "${cur#path-beneath:}" --list-landlock-rights fs
 					;;
 				net-port:*:*)
 					# net-port:<rights>:<port>, nothing to complete for a port
 					;;
 				net-port:*)
 					compopt -o nospace
-					_setpriv_landlock_rights "$1" net 'net-port:' "${cur#net-port:}"
+					_setpriv_landlock_rights "$1" 'net-port:' "${cur#net-port:}" --list-landlock-rights net
 					;;
 				*)
 					compopt -o nospace
@@ -223,6 +229,7 @@ _setpriv_module()
 				--apparmor-profile
 				--landlock-access
 				--landlock-rule
+				--landlock-restrict-self
 				--landlock-support
 				--seccomp-filter
 				--help

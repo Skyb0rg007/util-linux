@@ -22,17 +22,20 @@ struct setpriv_landlock_opts {
 	uint64_t access_fs;
 	uint64_t access_net;
 	uint64_t scoped;
+	uint64_t restrict_self;
 	struct list_head rules;
 };
 
 void do_landlock(const struct setpriv_landlock_opts *opts);
 void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str);
 void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str);
+void parse_landlock_restrict_self(struct setpriv_landlock_opts *opts, const char *str);
 void init_landlock_opts(struct setpriv_landlock_opts *opts);
 void usage_landlock(FILE *out);
 void list_landlock_support(void);
 void list_landlock_access(void);
 void list_landlock_rights(const char *access);
+void list_landlock_restrict_self(void);
 
 #else
 
@@ -49,6 +52,7 @@ static inline void parse_landlock_access(
 	errx(EXIT_FAILURE, _("no support for landlock"));
 }
 #define parse_landlock_rule parse_landlock_access
+#define parse_landlock_restrict_self parse_landlock_access
 static inline void init_landlock_opts(void *opts __attribute__((unused))) {}
 static inline void usage_landlock(FILE *out __attribute__((unused))) {}
 static inline void list_landlock_support(void)
@@ -60,6 +64,7 @@ static inline void list_landlock_rights(const char *access __attribute__((unused
 {
 	errx(EXIT_FAILURE, _("no support for landlock"));
 }
+#define list_landlock_restrict_self list_landlock_support
 
 #endif /* HAVE_LANDLOCK */
 

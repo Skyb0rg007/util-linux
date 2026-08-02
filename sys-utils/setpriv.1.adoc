@@ -153,6 +153,19 @@ which relaxes the *fs* access category, and *net-port*, whose _$rulearg_ is a
 TCP or UDP port number and which relaxes the *net* access category. A rule
 requires its access category to be restricted by *--landlock-access*.
 
+*--landlock-restrict-self* _flags_::
+
+Configure the logging behavior of the sandbox created by *--landlock-access* and
+*--landlock-rule*. The argument is a comma-separated list of flags. The available
+flags are *log-same-exec-off* (stop logging denied accesses from this thread until
+its next *execve*(2)), *log-new-exec-on* (log denied accesses from this domain after
+an *execve*(2)) and *log-subdomains-off* (stop logging denied accesses from nested
+landlock domains created within the sandbox). Requires at least one access category
+to be restricted by *--landlock-access*.
++
+A flag that the running kernel does not support is rejected; use
+*--list-landlock-restrict-self-flags* to inspect what is available.
+
 *--landlock-support*::
 List the landlock ABI version supported by the running kernel, together with the access
 categories, rights, and rule types that *setpriv* understands. Must be specified alone.
@@ -164,6 +177,9 @@ List the landlock access categories that are usable with *--landlock-access* and
 *--list-landlock-rights* _access_::
 List the rights of the given landlock access category that are supported by the running
 kernel.
+
+*--list-landlock-restrict-self-flags*::
+List the *--landlock-restrict-self* flags that are supported by the running kernel.
 
 *--seccomp-filter* _file_::
 
