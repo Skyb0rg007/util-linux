@@ -83,11 +83,13 @@ struct landlock_rule_entry {
 	};
 };
 
-static const struct {
+struct landlock_access_right {
 	unsigned long long value;
 	const char *type;
 	const char *help;
-} landlock_access_fs[] = {
+};
+
+static const struct landlock_access_right landlock_access_fs[] = {
 	{ LANDLOCK_ACCESS_FS_EXECUTE,      "execute",      N_("execute a file") },
 	{ LANDLOCK_ACCESS_FS_WRITE_FILE,   "write-file",   N_("open a file with write access") },
 	{ LANDLOCK_ACCESS_FS_READ_FILE,    "read-file",    N_("open a file with read access") },
@@ -107,7 +109,7 @@ static const struct {
 	{ LANDLOCK_ACCESS_FS_RESOLVE_UNIX, "resolve-unix", N_("connect(2) or bind(2) a pathname UNIX domain socket") },
 };
 
-/* cumulative access_fs rights supported by each landlock ABI version, indexed by (abi - 1) */
+/* cumulative rights supported by each landlock ABI version, indexed by (abi - 1) */
 static const uint64_t landlock_access_fs_mask[] = {
 	/* ABI 1 */ (LANDLOCK_ACCESS_FS_MAKE_SYM << 1) - 1,
 	/* ABI 2 */ (LANDLOCK_ACCESS_FS_REFER << 1) - 1,
@@ -132,116 +134,150 @@ static int supported_landlock_abi(void)
 	return abi;
 }
 
-static uint64_t landlock_abi_fs_mask(void)
+/* look up an ABI mask table, clamping to its last entry */
+static uint64_t landlock_abi_mask(const uint64_t *table, size_t ntable)
 {
 	int abi = supported_landlock_abi();
-	size_t n = ARRAY_SIZE(landlock_access_fs_mask);
 	size_t idx = (size_t) (abi - 1);
 
-	if (idx >= n)
-		idx = n - 1;
-	return landlock_access_fs_mask[idx];
+	if (idx >= ntable)
+		idx = ntable - 1;
+	return table[idx];
 }
 
-static long landlock_access_to_mask(const char *str, size_t len)
+static uint64_t landlock_fs_abi_mask(void)
+{
+	return landlock_abi_mask(landlock_access_fs_mask,
+				 ARRAY_SIZE(landlock_access_fs_mask));
+}
+
+static long landlock_right_to_mask(const struct landlock_access_right *rights,
+				   size_t nrights, const char *str, size_t len)
 {
 	size_t i;
 
-	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++)
-		if (strncmp(landlock_access_fs[i].type, str, len) == 0)
-			return landlock_access_fs[i].value;
+	for (i = 0; i < nrights; i++)
+		if (strncmp(rights[i].type, str, len) == 0)
+			return rights[i].value;
 	return -1;
+}
+
+static long landlock_fs_right_to_mask(const char *str, size_t len)
+{
+	return landlock_right_to_mask(landlock_access_fs,
+				      ARRAY_SIZE(landlock_access_fs), str, len);
 }
 
 /* reject rights the running kernel does not know about, they would otherwise
  * only be caught by landlock_create_ruleset() with a much less helpful error */
-static void check_landlock_fs_abi_support(uint64_t value)
+static void check_landlock_abi_support(const char *access,
+				       const struct landlock_access_right *rights,
+				       size_t nrights, uint64_t mask, uint64_t value)
 {
-	uint64_t unsupported = value & ~landlock_abi_fs_mask();
+	uint64_t unsupported = value & ~mask;
 	size_t i;
 
 	if (!unsupported)
 		return;
 
-	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++)
-		if (landlock_access_fs[i].value & unsupported)
+	for (i = 0; i < nrights; i++)
+		if (rights[i].value & unsupported)
 			errx(EXIT_FAILURE,
-			     _("landlock fs access right is not supported by the running kernel: %s"),
-			     landlock_access_fs[i].type);
+			     _("landlock %s access right is not supported by the running kernel: %s"),
+			     access, rights[i].type);
 
 	errx(EXIT_FAILURE,
-	     _("landlock fs access is not supported by the running kernel"));
+	     _("landlock %s access is not supported by the running kernel"), access);
 }
 
-/* all fs rights, for the form without an explicit right list */
-static uint64_t landlock_all_fs_rights(void)
+/* all rights of an access, for the form without an explicit right list */
+static uint64_t landlock_all_rights(const char *access, uint64_t mask)
 {
-	uint64_t mask = landlock_abi_fs_mask();
-
 	/* the whole access is unknown to the kernel; applying an empty mask
 	 * would silently restrict nothing at all */
 	if (!mask)
 		errx(EXIT_FAILURE,
-		     _("landlock fs access is not supported by the running kernel"));
+		     _("landlock %s access is not supported by the running kernel"), access);
 	return mask;
 }
 
-static uint64_t parse_landlock_fs_access(const char *list)
+static uint64_t parse_landlock_fs_rights(const char *list)
 {
 	unsigned long r = 0;
 
-	if (string_to_bitmask(list, &r, landlock_access_to_mask))
+	if (string_to_bitmask(list, &r, landlock_fs_right_to_mask))
 		errx(EXIT_FAILURE,
 		     _("could not parse landlock fs access: %s"), list);
 
-	check_landlock_fs_abi_support(r);
+	check_landlock_abi_support("fs", landlock_access_fs,
+				   ARRAY_SIZE(landlock_access_fs),
+				   landlock_fs_abi_mask(), r);
 	return r;
+}
+
+/* match "<name>" or "<name>:<rights>" and return the (possibly empty) right
+ * list, or NULL when str names a different access */
+static const char *landlock_access_arg(const char *str, const char *name)
+{
+	const char *rights = ul_startswith(str, name);
+
+	if (!rights)
+		return NULL;
+	if (rights[0] == ':')
+		return rights + 1;
+	if (rights[0] == '\0')
+		return rights;
+	return NULL;
 }
 
 void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 {
-	const char *type;
+	const char *rights;
 
-	type = ul_startswith(str, "fs:");
-
-	/* without argument, match all supported by the current kernel */
-	if (strcmp(str, "fs") == 0 || (type && type[0] == '\0')) {
-		opts->access_fs |= landlock_all_fs_rights();
+	rights = landlock_access_arg(str, "fs");
+	if (rights) {
+		/* without rights, match all supported by the current kernel */
+		if (rights[0] == '\0')
+			opts->access_fs |= landlock_all_rights("fs", landlock_fs_abi_mask());
+		else
+			opts->access_fs |= parse_landlock_fs_rights(rights);
 		return;
 	}
-
-	if (type)
-		opts->access_fs |= parse_landlock_fs_access(type);
 }
 
 void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 {
-	struct landlock_rule_entry *rule = xmalloc(sizeof(*rule));
-	const char *accesses, *path;
-	char *accesses_part;
+	struct landlock_rule_entry *rule;
+	const char *rights, *arg;
+	uint64_t allowed_access;
+	char *rights_part;
 	int parent_fd;
 
-	accesses = ul_startswith(str, "path-beneath:");
-	if (!accesses)
+	rights = ul_startswith(str, "path-beneath:");
+	if (!rights)
 		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
-	path = strchr(accesses, ':');
-	if (!path)
-		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
-	rule->rule_type = LANDLOCK_RULE_PATH_BENEATH;
 
-	accesses_part = xstrndup(accesses, path - accesses);
-	if (accesses_part[0] != '\0')
-		rule->path_beneath_attr.allowed_access = parse_landlock_fs_access(accesses_part);
+	arg = strchr(rights, ':');
+	if (!arg)
+		errx(EXIT_FAILURE, _("invalid landlock rule: %s"), str);
+
+	/* without rights, the rule grants back everything the ruleset handles */
+	rights_part = xstrndup(rights, arg - rights);
+	if (rights_part[0] != '\0')
+		allowed_access = parse_landlock_fs_rights(rights_part);
 	else
-		rule->path_beneath_attr.allowed_access = 0;
-	free(accesses_part);
+		allowed_access = 0;
+	free(rights_part);
 
-	path++;
+	arg++;
 
-	parent_fd = open(path, O_RDONLY | O_PATH | O_CLOEXEC);
+	parent_fd = open(arg, O_RDONLY | O_PATH | O_CLOEXEC);
 	if (parent_fd == -1)
-		err(EXIT_FAILURE, _("could not open file for landlock: %s"), path);
+		err(EXIT_FAILURE, _("could not open file for landlock: %s"), arg);
 
+	rule = xmalloc(sizeof(*rule));
+	rule->rule_type = LANDLOCK_RULE_PATH_BENEATH;
+	rule->path_beneath_attr.allowed_access = allowed_access;
 	rule->path_beneath_attr.parent_fd = parent_fd;
 
 	list_add(&rule->head, &opts->rules);
@@ -257,14 +293,13 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 	struct landlock_rule_entry *rule;
 	struct list_head *entry;
 	int fd, ret;
-	struct landlock_path_beneath_attr path_beneath_attr;
 
 	list_for_each(entry, &opts->rules) {
 		rule = list_entry(entry, struct landlock_rule_entry, head);
-		if (rule->rule_type == LANDLOCK_RULE_PATH_BENEATH && !opts->access_fs) {
+
+		if (rule->rule_type == LANDLOCK_RULE_PATH_BENEATH && !opts->access_fs)
 			errx(EXIT_FAILURE,
 				_("landlock path-beneath rule requires a filesystem access restriction (--landlock-access fs)"));
-		}
 	}
 
 	if (!opts->access_fs)
@@ -279,6 +314,8 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 		err(SETPRIV_EXIT_PRIVERR, _("landlock_create_ruleset failed"));
 
 	list_for_each(entry, &opts->rules) {
+		struct landlock_path_beneath_attr path_beneath_attr;
+
 		rule = list_entry(entry, struct landlock_rule_entry, head);
 
 		assert(rule->rule_type == LANDLOCK_RULE_PATH_BENEATH);
@@ -299,39 +336,67 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 		err(SETPRIV_EXIT_PRIVERR, _("landlock_restrict_self failed"));
 }
 
-void usage_landlock(FILE *out)
+static int landlock_rights_width(const struct landlock_access_right *rights,
+				 size_t nrights)
+{
+	int width = 0;
+	size_t i;
+
+	for (i = 0; i < nrights; i++)
+		width = max(width, (int) strlen(rights[i].type));
+	return width;
+}
+
+static void print_landlock_rights(FILE *out, const struct landlock_access_right *rights,
+				  size_t nrights, int width)
 {
 	size_t i;
 
+	for (i = 0; i < nrights; i++)
+		fprintf(out, "  %*s - %s\n", width, rights[i].type, _(rights[i].help));
+}
+
+void usage_landlock(FILE *out)
+{
+	int width = (int) strlen("path-beneath");
+
+	width = max(width, landlock_rights_width(landlock_access_fs,
+						 ARRAY_SIZE(landlock_access_fs)));
+
 	fputs(USAGE_ARGUMENTS, out);
-	fputs(_(" <access> is a landlock access; syntax is fs[:<right>, ...>]\n"), out);
-	fputs(_(" <rule> is a landlock rule; syntax is <type>:<right>:<argument>\n"), out);
+	fputs(_(" <access> is a landlock access; syntax is <access>[:<right>,...]\n"), out);
+	fputs(_(" <rule> is a landlock rule; syntax is <type>:<right>,...:<argument>\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock rule types are:\n"), out);
 	/* TRANSLATORS: Keep *{path-beneath}* untranslated, it's a type name */
-	fputs(_("  path-beneath - filesystem based rule; <argument> is a path\n"), out);
+	fprintf(out, "  %*s - %s\n", width, "path-beneath",
+			_("filesystem based rule; <argument> is a path"));
 
 	fputs(USAGE_SEPARATOR, out);
-	fputs(_(" available landlock filesystems rights are:\n"), out);
-	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++) {
-		fprintf(out, "  %12s - %s\n", landlock_access_fs[i].type,
-					_(landlock_access_fs[i].help));
-	}
+	fputs(_(" available landlock 'fs' rights are:\n"), out);
+	print_landlock_rights(out, landlock_access_fs,
+			      ARRAY_SIZE(landlock_access_fs), width);
+}
+
+static void print_landlock_right_names(const struct landlock_access_right *rights,
+				       size_t nrights)
+{
+	size_t i;
+
+	for (i = 0; i < nrights; i++)
+		printf(" %s", rights[i].type);
+	printf("\n");
 }
 
 void list_landlock_support(void)
 {
-	size_t i;
-
 	printf("ABI: %d\n", supported_landlock_abi());
 
 	printf("access: fs\n");
 
-	printf("rights:");
-	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++)
-		printf(" %s", landlock_access_fs[i].type);
-	printf("\n");
+	printf("fs rights:");
+	print_landlock_right_names(landlock_access_fs, ARRAY_SIZE(landlock_access_fs));
 
 	printf("rules: path-beneath\n");
 }
@@ -341,16 +406,22 @@ void list_landlock_access(void)
 	printf("fs\n");
 }
 
-void list_landlock_rights(const char *access)
+static void print_landlock_supported_rights(const struct landlock_access_right *rights,
+					    size_t nrights, uint64_t mask)
 {
-	uint64_t mask;
 	size_t i;
 
-	if (strcmp(access, "fs") != 0)
-		errx(EXIT_FAILURE, _("unknown landlock access: %s"), access);
+	for (i = 0; i < nrights; i++)
+		if (rights[i].value & mask)
+			printf("%s\n", rights[i].type);
+}
 
-	mask = landlock_abi_fs_mask();
-	for (i = 0; i < ARRAY_SIZE(landlock_access_fs); i++)
-		if (landlock_access_fs[i].value & mask)
-			printf("%s\n", landlock_access_fs[i].type);
+void list_landlock_rights(const char *access)
+{
+	if (strcmp(access, "fs") == 0)
+		print_landlock_supported_rights(landlock_access_fs,
+						ARRAY_SIZE(landlock_access_fs),
+						landlock_fs_abi_mask());
+	else
+		errx(EXIT_FAILURE, _("unknown landlock access: %s"), access);
 }
