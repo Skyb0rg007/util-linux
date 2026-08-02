@@ -107,8 +107,10 @@ To allow specific subgroups of accesses use *--landlock-rule*.
 +
 The syntax is *$category*[**:**__$right__[**,**__...__]]. Without any rights the whole
 category is restricted. The available categories are *fs* (filesystem accesses,
-for example _read-file_ or _make-dir_) and *net* (TCP port accesses, that is
-_bind-tcp_ and _connect-tcp_).
+for example _read-file_ or _make-dir_), *net* (TCP port accesses, that is
+_bind-tcp_ and _connect-tcp_) and *scoped* (IPC accesses that reach outside of
+the sandbox, that is _abstract-unix-socket_ and _signal_). Unlike the other
+categories, *scoped* cannot be relaxed by *--landlock-rule*.
 +
 Block all filesystem access:
 +
@@ -118,9 +120,9 @@ Block all file deletions and directory creations:
 +
 *setpriv --landlock-access fs:remove-file,make-dir*
 +
-Block outgoing TCP connections:
+Block outgoing TCP connections and signals to processes outside the sandbox:
 +
-*setpriv --landlock-access net:connect-tcp*
+*setpriv --landlock-access net:connect-tcp --landlock-access scoped:signal*
 +
 An access right that the running kernel does not support is rejected; use
 *--landlock-support* to inspect what is available. For a complete set of

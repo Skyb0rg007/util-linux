@@ -27,6 +27,7 @@ enum landlock_rule_type {
 struct landlock_ruleset_attr {
 	uint64_t handled_access_fs;
 	uint64_t handled_access_net;
+	uint64_t scoped;
 };
 
 struct landlock_path_beneath_attr {
@@ -61,6 +62,9 @@ struct landlock_net_port_attr {
 
 #define LANDLOCK_ACCESS_NET_BIND_TCP			(1ULL << 0)
 #define LANDLOCK_ACCESS_NET_CONNECT_TCP			(1ULL << 1)
+
+#define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET		(1ULL << 0)
+#define LANDLOCK_SCOPE_SIGNAL				(1ULL << 1)
 
 static inline int landlock_create_ruleset(
 		const struct landlock_ruleset_attr *attr,
@@ -124,6 +128,11 @@ static const struct landlock_access_right landlock_access_net[] = {
 	{ LANDLOCK_ACCESS_NET_CONNECT_TCP, "connect-tcp",  N_("connect a TCP socket to a remote port") },
 };
 
+static const struct landlock_access_right landlock_scoped[] = {
+	{ LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET, "abstract-unix-socket", N_("connect to an abstract UNIX domain socket created outside the sandbox") },
+	{ LANDLOCK_SCOPE_SIGNAL,               "signal",               N_("send a signal to a process outside the sandbox") },
+};
+
 /* cumulative rights supported by each landlock ABI version, indexed by (abi - 1) */
 static const uint64_t landlock_access_fs_mask[] = {
 	/* ABI 1 */ (LANDLOCK_ACCESS_FS_MAKE_SYM << 1) - 1,
@@ -142,6 +151,15 @@ static const uint64_t landlock_access_net_mask[] = {
 	/* ABI 2 */ 0,
 	/* ABI 3 */ 0,
 	/* ABI 4 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+};
+
+static const uint64_t landlock_scoped_mask[] = {
+	/* ABI 1 */ 0,
+	/* ABI 2 */ 0,
+	/* ABI 3 */ 0,
+	/* ABI 4 */ 0,
+	/* ABI 5 */ 0,
+	/* ABI 6 */ (LANDLOCK_SCOPE_SIGNAL << 1) - 1,
 };
 
 static int supported_landlock_abi(void)
@@ -179,6 +197,12 @@ static uint64_t landlock_net_abi_mask(void)
 				 ARRAY_SIZE(landlock_access_net_mask));
 }
 
+static uint64_t landlock_scoped_abi_mask(void)
+{
+	return landlock_abi_mask(landlock_scoped_mask,
+				 ARRAY_SIZE(landlock_scoped_mask));
+}
+
 static long landlock_right_to_mask(const struct landlock_access_right *rights,
 				   size_t nrights, const char *str, size_t len)
 {
@@ -200,6 +224,12 @@ static long landlock_net_right_to_mask(const char *str, size_t len)
 {
 	return landlock_right_to_mask(landlock_access_net,
 				      ARRAY_SIZE(landlock_access_net), str, len);
+}
+
+static long landlock_scoped_right_to_mask(const char *str, size_t len)
+{
+	return landlock_right_to_mask(landlock_scoped,
+				      ARRAY_SIZE(landlock_scoped), str, len);
 }
 
 /* reject rights the running kernel does not know about, they would otherwise
@@ -263,6 +293,20 @@ static uint64_t parse_landlock_net_rights(const char *list)
 	return r;
 }
 
+static uint64_t parse_landlock_scoped_rights(const char *list)
+{
+	unsigned long r = 0;
+
+	if (string_to_bitmask(list, &r, landlock_scoped_right_to_mask))
+		errx(EXIT_FAILURE,
+		     _("could not parse landlock scoped access: %s"), list);
+
+	check_landlock_abi_support("scoped", landlock_scoped,
+				   ARRAY_SIZE(landlock_scoped),
+				   landlock_scoped_abi_mask(), r);
+	return r;
+}
+
 /* match "<name>" or "<name>:<rights>" and return the (possibly empty) right
  * list, or NULL when str names a different access */
 static const char *landlock_access_arg(const char *str, const char *name)
@@ -298,6 +342,15 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 			opts->access_net |= landlock_all_rights("net", landlock_net_abi_mask());
 		else
 			opts->access_net |= parse_landlock_net_rights(rights);
+		return;
+	}
+
+	rights = landlock_access_arg(str, "scoped");
+	if (rights) {
+		if (rights[0] == '\0')
+			opts->scoped |= landlock_all_rights("scoped", landlock_scoped_abi_mask());
+		else
+			opts->scoped |= parse_landlock_scoped_rights(rights);
 		return;
 	}
 }
@@ -392,12 +445,13 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 				_("landlock net-port rule requires a network access restriction (--landlock-access net)"));
 	}
 
-	if (!opts->access_fs && !opts->access_net)
+	if (!opts->access_fs && !opts->access_net && !opts->scoped)
 		return;
 
 	const struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = opts->access_fs,
 		.handled_access_net = opts->access_net,
+		.scoped = opts->scoped,
 	};
 
 	fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
@@ -464,6 +518,8 @@ void usage_landlock(FILE *out)
 						 ARRAY_SIZE(landlock_access_fs)));
 	width = max(width, landlock_rights_width(landlock_access_net,
 						 ARRAY_SIZE(landlock_access_net)));
+	width = max(width, landlock_rights_width(landlock_scoped,
+						 ARRAY_SIZE(landlock_scoped)));
 
 	fputs(USAGE_ARGUMENTS, out);
 	fputs(_(" <access> is a landlock access; syntax is <access>[:<right>,...]\n"), out);
@@ -487,6 +543,11 @@ void usage_landlock(FILE *out)
 	fputs(_(" available landlock 'net' rights are:\n"), out);
 	print_landlock_rights(out, landlock_access_net,
 			      ARRAY_SIZE(landlock_access_net), width);
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(_(" available landlock 'scoped' rights are:\n"), out);
+	print_landlock_rights(out, landlock_scoped,
+			      ARRAY_SIZE(landlock_scoped), width);
 }
 
 static void print_landlock_right_names(const struct landlock_access_right *rights,
@@ -503,13 +564,16 @@ void list_landlock_support(void)
 {
 	printf("ABI: %d\n", supported_landlock_abi());
 
-	printf("access: fs net\n");
+	printf("access: fs net scoped\n");
 
 	printf("fs rights:");
 	print_landlock_right_names(landlock_access_fs, ARRAY_SIZE(landlock_access_fs));
 
 	printf("net rights:");
 	print_landlock_right_names(landlock_access_net, ARRAY_SIZE(landlock_access_net));
+
+	printf("scoped rights:");
+	print_landlock_right_names(landlock_scoped, ARRAY_SIZE(landlock_scoped));
 
 	printf("rules: path-beneath net-port\n");
 }
@@ -520,6 +584,8 @@ void list_landlock_access(void)
 		printf("fs\n");
 	if (landlock_net_abi_mask())
 		printf("net\n");
+	if (landlock_scoped_abi_mask())
+		printf("scoped\n");
 }
 
 static void print_landlock_supported_rights(const struct landlock_access_right *rights,
@@ -542,6 +608,10 @@ void list_landlock_rights(const char *access)
 		print_landlock_supported_rights(landlock_access_net,
 						ARRAY_SIZE(landlock_access_net),
 						landlock_net_abi_mask());
+	else if (strcmp(access, "scoped") == 0)
+		print_landlock_supported_rights(landlock_scoped,
+						ARRAY_SIZE(landlock_scoped),
+						landlock_scoped_abi_mask());
 	else
 		errx(EXIT_FAILURE, _("unknown landlock access: %s"), access);
 }

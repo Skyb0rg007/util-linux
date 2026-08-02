@@ -129,4 +129,28 @@ if "$TS_CMD_SETPRIV" --landlock-access net true &> /dev/null; then
 	fi
 fi
 
+# The "scoped" access category needs landlock ABI 6.
+if "$TS_CMD_SETPRIV" --landlock-access scoped true &> /dev/null; then
+
+	# setpriv exec()s the shell, so $PPID is the test's own shell, which
+	# stays outside of the landlock domain.
+	ts_init_subtest "scoped-signal-blocked"
+	if "$TS_CMD_SETPRIV" --landlock-access scoped:signal \
+			bash -c 'kill -0 $PPID' &> /dev/null; then
+		echo "signal allowed" &> "$TS_OUTPUT"
+	else
+		echo "signal blocked" &> "$TS_OUTPUT"
+	fi
+	ts_finalize_subtest
+
+	ts_init_subtest "scoped-signal-allowed"
+	if "$TS_CMD_SETPRIV" --landlock-access scoped:abstract-unix-socket \
+			bash -c 'kill -0 $PPID' &> /dev/null; then
+		echo "signal allowed" &> "$TS_OUTPUT"
+	else
+		echo "signal blocked" &> "$TS_OUTPUT"
+	fi
+	ts_finalize_subtest
+fi
+
 ts_finalize
