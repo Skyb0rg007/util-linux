@@ -129,6 +129,36 @@ if "$TS_CMD_SETPRIV" --landlock-access net true &> /dev/null; then
 	fi
 fi
 
+# The "net" udp rights need landlock ABI 10.
+if "$TS_CMD_SETPRIV" --landlock-access net:bind-udp,connect-send-udp true &> /dev/null; then
+
+	# See the TCP case above for why only the errno is checked.
+	if ! bash -c 'exec 3<>/dev/udp/127.0.0.1/9' 2>&1 \
+			| grep -qi 'no such file or directory'; then
+
+		ts_init_subtest "net-udp-connect-blocked"
+		if "$TS_CMD_SETPRIV" --landlock-access net:connect-send-udp \
+				bash -c 'exec 3<>/dev/udp/127.0.0.1/9' 2>&1 \
+				| grep -qi 'permission denied'; then
+			echo "connect blocked" &> "$TS_OUTPUT"
+		else
+			echo "connect allowed" &> "$TS_OUTPUT"
+		fi
+		ts_finalize_subtest
+
+		ts_init_subtest "net-udp-connect-allowed"
+		if "$TS_CMD_SETPRIV" --landlock-access net:connect-send-udp \
+				--landlock-rule net-port:connect-send-udp:9 \
+				bash -c 'exec 3<>/dev/udp/127.0.0.1/9' 2>&1 \
+				| grep -qi 'permission denied'; then
+			echo "connect blocked" &> "$TS_OUTPUT"
+		else
+			echo "connect allowed" &> "$TS_OUTPUT"
+		fi
+		ts_finalize_subtest
+	fi
+fi
+
 # The "scoped" access category needs landlock ABI 6.
 if "$TS_CMD_SETPRIV" --landlock-access scoped true &> /dev/null; then
 

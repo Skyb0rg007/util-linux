@@ -62,6 +62,8 @@ struct landlock_net_port_attr {
 
 #define LANDLOCK_ACCESS_NET_BIND_TCP			(1ULL << 0)
 #define LANDLOCK_ACCESS_NET_CONNECT_TCP			(1ULL << 1)
+#define LANDLOCK_ACCESS_NET_BIND_UDP			(1ULL << 2)
+#define LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP		(1ULL << 3)
 
 #define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET		(1ULL << 0)
 #define LANDLOCK_SCOPE_SIGNAL				(1ULL << 1)
@@ -126,6 +128,8 @@ static const struct landlock_access_right landlock_access_fs[] = {
 static const struct landlock_access_right landlock_access_net[] = {
 	{ LANDLOCK_ACCESS_NET_BIND_TCP,    "bind-tcp",     N_("bind a TCP socket to a local port") },
 	{ LANDLOCK_ACCESS_NET_CONNECT_TCP, "connect-tcp",  N_("connect a TCP socket to a remote port") },
+	{ LANDLOCK_ACCESS_NET_BIND_UDP,    "bind-udp",     N_("bind a UDP socket to a local port") },
+	{ LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP, "connect-send-udp",  N_("send datagrams on a UDP socket to a remote port") },
 };
 
 static const struct landlock_access_right landlock_scoped[] = {
@@ -151,6 +155,12 @@ static const uint64_t landlock_access_net_mask[] = {
 	/* ABI 2 */ 0,
 	/* ABI 3 */ 0,
 	/* ABI 4 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 5 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 6 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 7 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 8 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 9 */ (LANDLOCK_ACCESS_NET_CONNECT_TCP << 1) - 1,
+	/* ABI 10 */ (LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP << 1) - 1,
 };
 
 static const uint64_t landlock_scoped_mask[] = {

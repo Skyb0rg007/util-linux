@@ -107,10 +107,11 @@ To allow specific subgroups of accesses use *--landlock-rule*.
 +
 The syntax is *$category*[**:**__$right__[**,**__...__]]. Without any rights the whole
 category is restricted. The available categories are *fs* (filesystem accesses,
-for example _read-file_ or _make-dir_), *net* (TCP port accesses, that is
-_bind-tcp_ and _connect-tcp_) and *scoped* (IPC accesses that reach outside of
-the sandbox, that is _abstract-unix-socket_ and _signal_). Unlike the other
-categories, *scoped* cannot be relaxed by *--landlock-rule*.
+for example _read-file_ or _make-dir_), *net* (TCP and UDP port accesses, that is
+_bind-tcp_, _connect-tcp_, _bind-udp_ and _connect-send-udp_) and *scoped* (IPC
+accesses that reach outside of the sandbox, that is _abstract-unix-socket_ and
+_signal_). Unlike the other categories, *scoped* cannot be relaxed by
+*--landlock-rule*.
 +
 Block all filesystem access:
 +
@@ -149,8 +150,8 @@ And grant the right to connect to port 443:
 +
 The available rule types are *path-beneath*, whose _$rulearg_ is a path and
 which relaxes the *fs* access category, and *net-port*, whose _$rulearg_ is a
-TCP port number and which relaxes the *net* access category. A rule requires
-its access category to be restricted by *--landlock-access*.
+TCP or UDP port number and which relaxes the *net* access category. A rule
+requires its access category to be restricted by *--landlock-access*.
 
 *--landlock-support*::
 List the landlock ABI version supported by the running kernel, together with the access
