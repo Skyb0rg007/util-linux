@@ -1,0 +1,1 @@
+setpriv: landlock quiet logging is not supported by the running kernel

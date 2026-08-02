@@ -28,6 +28,9 @@ struct landlock_ruleset_attr {
 	uint64_t handled_access_fs;
 	uint64_t handled_access_net;
 	uint64_t scoped;
+	uint64_t quiet_access_fs;
+	uint64_t quiet_access_net;
+	uint64_t quiet_scoped;
 };
 
 struct landlock_path_beneath_attr {
@@ -41,6 +44,8 @@ struct landlock_net_port_attr {
 };
 
 #define LANDLOCK_CREATE_RULESET_VERSION			(1U << 0)
+
+#define LANDLOCK_ADD_RULE_QUIET			(1U << 0)
 
 #define LANDLOCK_ACCESS_FS_EXECUTE			(1ULL << 0)
 #define LANDLOCK_ACCESS_FS_WRITE_FILE			(1ULL << 1)
@@ -98,6 +103,7 @@ static inline int landlock_restrict_self(int ruleset_fd, uint32_t flags)
 struct landlock_rule_entry {
 	struct list_head head;
 	enum landlock_rule_type rule_type;
+	int quiet;
 	union {
 		struct landlock_path_beneath_attr path_beneath_attr;
 		struct landlock_net_port_attr net_port_attr;
@@ -297,6 +303,19 @@ static void check_landlock_abi_support(const char *access,
 	     _("landlock %s access is not supported by the running kernel"), access);
 }
 
+/* quiet logging needs landlock ABI 10, regardless of which rights are quieted */
+static int landlock_quiet_supported(void)
+{
+	return supported_landlock_abi() >= 10;
+}
+
+static void check_landlock_quiet_abi_support(void)
+{
+	if (!landlock_quiet_supported())
+		errx(EXIT_FAILURE,
+		     _("landlock quiet logging is not supported by the running kernel"));
+}
+
 /* all rights of an access, for the form without an explicit right list */
 static uint64_t landlock_all_rights(const char *access, uint64_t mask)
 {
@@ -368,6 +387,17 @@ static const char *landlock_access_arg(const char *str, const char *name)
 void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 {
 	const char *rights;
+	uint64_t r;
+
+	rights = landlock_access_arg(str, "fs-quiet");
+	if (rights) {
+		check_landlock_quiet_abi_support();
+		r = rights[0] == '\0' ? landlock_all_rights("fs", landlock_fs_abi_mask())
+				      : parse_landlock_fs_rights(rights);
+		opts->access_fs |= r;
+		opts->quiet_access_fs |= r;
+		return;
+	}
 
 	rights = landlock_access_arg(str, "fs");
 	if (rights) {
@@ -379,12 +409,32 @@ void parse_landlock_access(struct setpriv_landlock_opts *opts, const char *str)
 		return;
 	}
 
+	rights = landlock_access_arg(str, "net-quiet");
+	if (rights) {
+		check_landlock_quiet_abi_support();
+		r = rights[0] == '\0' ? landlock_all_rights("net", landlock_net_abi_mask())
+				      : parse_landlock_net_rights(rights);
+		opts->access_net |= r;
+		opts->quiet_access_net |= r;
+		return;
+	}
+
 	rights = landlock_access_arg(str, "net");
 	if (rights) {
 		if (rights[0] == '\0')
 			opts->access_net |= landlock_all_rights("net", landlock_net_abi_mask());
 		else
 			opts->access_net |= parse_landlock_net_rights(rights);
+		return;
+	}
+
+	rights = landlock_access_arg(str, "scoped-quiet");
+	if (rights) {
+		check_landlock_quiet_abi_support();
+		r = rights[0] == '\0' ? landlock_all_rights("scoped", landlock_scoped_abi_mask())
+				      : parse_landlock_scoped_rights(rights);
+		opts->scoped |= r;
+		opts->quiet_scoped |= r;
 		return;
 	}
 
@@ -434,9 +484,17 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 	uint64_t allowed_access;
 	char *rights_part;
 	int parent_fd;
+	int quiet;
 
-	rights = ul_startswith(str, "path-beneath:");
+	quiet = 1;
+	rights = ul_startswith(str, "path-beneath-quiet:");
+	if (!rights) {
+		quiet = 0;
+		rights = ul_startswith(str, "path-beneath:");
+	}
 	if (rights) {
+		if (quiet)
+			check_landlock_quiet_abi_support();
 		arg = landlock_rule_split(str, rights, &rights_part);
 		/* without rights, the rule grants back all the ruleset handles */
 		if (rights_part[0] != '\0')
@@ -451,6 +509,7 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 
 		rule = xmalloc(sizeof(*rule));
 		rule->rule_type = LANDLOCK_RULE_PATH_BENEATH;
+		rule->quiet = quiet;
 		rule->path_beneath_attr.allowed_access = allowed_access;
 		rule->path_beneath_attr.parent_fd = parent_fd;
 
@@ -458,8 +517,15 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 		return;
 	}
 
-	rights = ul_startswith(str, "net-port:");
+	quiet = 1;
+	rights = ul_startswith(str, "net-port-quiet:");
+	if (!rights) {
+		quiet = 0;
+		rights = ul_startswith(str, "net-port:");
+	}
 	if (rights) {
+		if (quiet)
+			check_landlock_quiet_abi_support();
 		arg = landlock_rule_split(str, rights, &rights_part);
 		if (rights_part[0] != '\0')
 			allowed_access = parse_landlock_net_rights(rights_part);
@@ -469,6 +535,7 @@ void parse_landlock_rule(struct setpriv_landlock_opts *opts, const char *str)
 
 		rule = xmalloc(sizeof(*rule));
 		rule->rule_type = LANDLOCK_RULE_NET_PORT;
+		rule->quiet = quiet;
 		rule->net_port_attr.allowed_access = allowed_access;
 		rule->net_port_attr.port = strtou16_or_err(arg,
 				_("could not parse landlock port"));
@@ -513,6 +580,9 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 		.handled_access_fs = opts->access_fs,
 		.handled_access_net = opts->access_net,
 		.scoped = opts->scoped,
+		.quiet_access_fs = opts->quiet_access_fs,
+		.quiet_access_net = opts->quiet_access_net,
+		.quiet_scoped = opts->quiet_scoped,
 	};
 
 	fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
@@ -539,7 +609,8 @@ void do_landlock(const struct setpriv_landlock_opts *opts)
 			rule_attr = &net_port_attr;
 		}
 
-		ret = landlock_add_rule(fd, rule->rule_type, rule_attr, 0);
+		ret = landlock_add_rule(fd, rule->rule_type, rule_attr,
+					rule->quiet ? LANDLOCK_ADD_RULE_QUIET : 0);
 		if (ret == -1)
 			err(SETPRIV_EXIT_PRIVERR, _("adding landlock rule failed"));
 	}
@@ -586,7 +657,9 @@ void usage_landlock(FILE *out)
 
 	fputs(USAGE_ARGUMENTS, out);
 	fputs(_(" <access> is a landlock access; syntax is <access>[:<right>,...]\n"), out);
+	fputs(_(" appending '-quiet' to <access>'s category also silences its logging\n"), out);
 	fputs(_(" <rule> is a landlock rule; syntax is <type>:<right>,...:<argument>\n"), out);
+	fputs(_(" appending '-quiet' to <type> also marks the rule for silencing\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" available landlock rule types are:\n"), out);
@@ -632,7 +705,7 @@ void list_landlock_support(void)
 {
 	printf("ABI: %d\n", supported_landlock_abi());
 
-	printf("access: fs net scoped\n");
+	printf("access: fs net scoped fs-quiet net-quiet scoped-quiet\n");
 
 	printf("fs rights:");
 	print_landlock_right_names(landlock_access_fs, ARRAY_SIZE(landlock_access_fs));
@@ -646,17 +719,26 @@ void list_landlock_support(void)
 	printf("restrict-self flags:");
 	print_landlock_right_names(landlock_restrict_self_rights, ARRAY_SIZE(landlock_restrict_self_rights));
 
-	printf("rules: path-beneath net-port\n");
+	printf("rules: path-beneath net-port path-beneath-quiet net-port-quiet\n");
 }
 
 void list_landlock_access(void)
 {
-	if (landlock_fs_abi_mask())
+	if (landlock_fs_abi_mask()) {
 		printf("fs\n");
-	if (landlock_net_abi_mask())
+		if (landlock_quiet_supported())
+			printf("fs-quiet\n");
+	}
+	if (landlock_net_abi_mask()) {
 		printf("net\n");
-	if (landlock_scoped_abi_mask())
+		if (landlock_quiet_supported())
+			printf("net-quiet\n");
+	}
+	if (landlock_scoped_abi_mask()) {
 		printf("scoped\n");
+		if (landlock_quiet_supported())
+			printf("scoped-quiet\n");
+	}
 }
 
 static void print_landlock_supported_rights(const struct landlock_access_right *rights,
@@ -671,15 +753,15 @@ static void print_landlock_supported_rights(const struct landlock_access_right *
 
 void list_landlock_rights(const char *access)
 {
-	if (strcmp(access, "fs") == 0)
+	if (strcmp(access, "fs") == 0 || strcmp(access, "fs-quiet") == 0)
 		print_landlock_supported_rights(landlock_access_fs,
 						ARRAY_SIZE(landlock_access_fs),
 						landlock_fs_abi_mask());
-	else if (strcmp(access, "net") == 0)
+	else if (strcmp(access, "net") == 0 || strcmp(access, "net-quiet") == 0)
 		print_landlock_supported_rights(landlock_access_net,
 						ARRAY_SIZE(landlock_access_net),
 						landlock_net_abi_mask());
-	else if (strcmp(access, "scoped") == 0)
+	else if (strcmp(access, "scoped") == 0 || strcmp(access, "scoped-quiet") == 0)
 		print_landlock_supported_rights(landlock_scoped,
 						ARRAY_SIZE(landlock_scoped),
 						landlock_scoped_abi_mask());

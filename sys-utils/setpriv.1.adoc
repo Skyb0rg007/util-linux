@@ -131,6 +131,23 @@ supported access categories use *setpriv --help*.
 +
 The set of access categories is subject to change and may be extended in future
 versions to support new access types.
++
+Appending *-quiet* to a category name (*fs-quiet*, *net-quiet* or
+*scoped-quiet*) both restricts and silences Landlock's audit logging for the
+given rights in one step, equivalent to using the plain category name and
+then separately marking the same rights quiet. Rights restricted through the
+plain category name keep being logged normally. Combine both forms across
+multiple *--landlock-access* options to restrict a wider set of rights while
+only silencing a subset of them, for example:
++
+*setpriv --landlock-access fs:read-file,write-file --landlock-access fs-quiet:write-file*
++
+For *fs* and *net*, a silenced right is only actually silenced for denials
+attributed to a rule marked *quiet* (see *--landlock-rule*); other denials of
+the same right are logged as usual. For *scoped*, no per-rule marking is
+needed. *-quiet* categories require the running kernel to support Landlock
+quiet logging, available since Landlock ABI 10; use *--landlock-support* to
+check the running kernel's ABI version.
 
 *--landlock-rule* _rule_::
 
@@ -152,6 +169,12 @@ The available rule types are *path-beneath*, whose _$rulearg_ is a path and
 which relaxes the *fs* access category, and *net-port*, whose _$rulearg_ is a
 TCP or UDP port number and which relaxes the *net* access category. A rule
 requires its access category to be restricted by *--landlock-access*.
++
+Appending *-quiet* to _$ruletype_ (*path-beneath-quiet*, *net-port-quiet*)
+marks the rule as one whose denials can be silenced, for the rights
+restricted through a *-quiet* *--landlock-access* category (see
+*--landlock-access*). This requires the running kernel to support Landlock
+quiet logging.
 
 *--landlock-restrict-self* _flags_::
 

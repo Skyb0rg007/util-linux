@@ -210,4 +210,38 @@ if "$TS_CMD_SETPRIV" --landlock-access net --landlock-restrict-self log-same-exe
 	ts_finalize_subtest
 fi
 
+# Quiet logging needs landlock ABI 10; the "-quiet" suffix on a
+# --landlock-access category both restricts and quiets in one step.
+if "$TS_CMD_SETPRIV" --landlock-access fs-quiet true &> /dev/null; then
+
+	ts_init_subtest "quiet-combined"
+	"$TS_CMD_SETPRIV" --landlock-access fs-quiet:read-file \
+		--landlock-rule path-beneath:read-file:/ \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "quiet-subset"
+	"$TS_CMD_SETPRIV" --landlock-access fs:read-file,write-file \
+		--landlock-access fs-quiet:write-file \
+		--landlock-rule path-beneath:read-file,write-file:/ \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+
+	ts_init_subtest "quiet-rule-combined"
+	"$TS_CMD_SETPRIV" --landlock-access fs-quiet:read-file \
+		--landlock-rule path-beneath-quiet:read-file:/ \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+else
+	ts_init_subtest "quiet-unsupported-abi"
+	"$TS_CMD_SETPRIV" --landlock-access fs:read-file \
+		--landlock-rule path-beneath-quiet:read-file:/ \
+		true \
+		&> "$TS_OUTPUT"
+	ts_finalize_subtest
+fi
+
 ts_finalize

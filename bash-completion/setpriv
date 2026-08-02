@@ -165,10 +165,11 @@ _setpriv_module()
 			;;
 		'--landlock-rule')
 			case $cur in
-				path-beneath:*:*)
-					# path-beneath:<rights>:<path>
-					local rest="${cur#path-beneath:}" i
-					local prefix="path-beneath:${rest%%:*}:"
+				path-beneath*:*:*)
+					# path-beneath[-quiet]:<rights>:<path>
+					local ruletype="${cur%%:*}" i
+					local rest="${cur#"$ruletype":}"
+					local prefix="$ruletype:${rest%%:*}:"
 					local path="${cur#"$prefix"}"
 					compopt -o filenames
 					mapfile -t COMPREPLY < <(compgen -f -- "$path")
@@ -177,20 +178,20 @@ _setpriv_module()
 					done
 					_setpriv_ltrim_colon_completions "$cur"
 					;;
-				path-beneath:*)
+				path-beneath*:*)
 					compopt -o nospace
-					_setpriv_landlock_rights "$1" 'path-beneath:' "${cur#path-beneath:}" --list-landlock-rights fs
+					_setpriv_landlock_rights "$1" "${cur%%:*}:" "${cur#*:}" --list-landlock-rights fs
 					;;
-				net-port:*:*)
-					# net-port:<rights>:<port>, nothing to complete for a port
+				net-port*:*:*)
+					# net-port[-quiet]:<rights>:<port>, nothing to complete for a port
 					;;
-				net-port:*)
+				net-port*:*)
 					compopt -o nospace
-					_setpriv_landlock_rights "$1" 'net-port:' "${cur#net-port:}" --list-landlock-rights net
+					_setpriv_landlock_rights "$1" "${cur%%:*}:" "${cur#*:}" --list-landlock-rights net
 					;;
 				*)
 					compopt -o nospace
-					COMPREPLY=( $(compgen -W "path-beneath: net-port:" -- $cur) )
+					COMPREPLY=( $(compgen -W "path-beneath: path-beneath-quiet: net-port: net-port-quiet:" -- $cur) )
 					;;
 			esac
 			return 0
