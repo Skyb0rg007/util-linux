@@ -142,6 +142,21 @@ Run the program only after the current effective user and group IDs have been ma
 *-c*, *--map-current-user*::
 Run the program only after the current effective user and group IDs have been mapped to the same UID and GID in the newly created user namespace. This option implies *--setgroups=deny* and *--user*. This option is equivalent to *--map-user=$(id -ru) --map-group=$(id -rg)*.
 
+*--map-transient*[**=**__size__]::
+Allocate a transient user and group ID range from *systemd-nsresourced.service*(8) and map it into the new user namespace, instead of mapping an ID the caller already owns. _size_ must be *1* (the default) or *64k*; these are the only range sizes the service supports. The allocation is transient: it is returned to the pool once the user namespace goes away. This option implies *--user*.
++
+The caller's own ID is deliberately *not* mapped, so the calling process is unmapped in the new namespace and its file system accesses still use its original ID. Use *--setuid* and *--setgid* to run as an ID from the allocated range, for example *--map-transient=64k --setuid 0 --setgid 0*.
++
+By default the range is mapped at ID 0 inside the namespace. Use *--map-user* and *--map-group* to select a different target ID; because the service always allocates user and group IDs symmetrically, both must specify the same ID. *--map-current-user* cannot be combined with this option, as a transient range does not map the current user at all.
++
+Processes running as a transient ID are confined by a BPF-LSM policy that only permits them to create files on filesystems the user namespace mounted itself, or that have been explicitly allowlisted with the service. Note that this confinement does not currently apply to filesystems inherited into a new mount namespace created together with the user namespace.
+
+*--map-foreign*::
+Map the foreign user ID range 1:1 into the new user namespace using *systemd-nsresourced.service*(8), so that processes inside can access files owned by that range. This option implies *--user*.
+
+*--map-delegate-container-ranges* _num_::
+Delegate _num_ transient 64K user and group ID ranges using *systemd-nsresourced.service*(8), where _num_ is between 0 and 16. These ranges are mapped 1:1 into the new user namespace and can be claimed by nested user namespaces, which allows a container set up inside the namespace to allocate ranges of its own. This option implies *--user*.
+
 *--owner* __uid__**:**__gid__::
 Set the owner user and group when creating a user namespace. These determine which user in the parent namespace has CAP_SYS_ADMIN in the new child namespace and can *setns*(2) into it. This option allows a privileged user to create a namespace on behalf of an unprivileged one, using its privileges to map ids and/or bind mount the namespace into the filesystem. It implies *--user*.
 
@@ -235,6 +250,19 @@ $ ls -ln --time-style=+ file
 -rw-r--r-- 1 100000 100000 0  file
 ....
 
+The following example allocates a transient 64K user and group ID range from *systemd-nsresourced.service*(8) and runs as the first ID of that range. Note that *--setuid*/*--setgid* are required to enter the range; without them the calling process stays unmapped and keeps using its original ID.
+
+....
+$ id -u
+1000
+$ unshare --user --map-transient=64k --setuid 0 --setgid 0
+# id -u
+0
+# cat /proc/self/uid_map
+         0  432799744      65536
+# exit
+....
+
 The first of the following commands creates a new persistent UTS namespace and modifies the hostname as seen in that namespace. The namespace is then entered with *nsenter*(1) in order to display the modified hostname; this step demonstrates that the UTS namespace continues to exist even though the namespace had no member processes after the *unshare* command terminated. The namespace is then destroyed by removing the bind mount.
 
 ....
@@ -326,7 +354,8 @@ mailto:kzak@redhat.com[Karel Zak]
 *clone*(2),
 *unshare*(2),
 *namespaces*(7),
-*mount*(8)
+*mount*(8),
+*systemd-nsresourced.service*(8)
 
 include::man-common/bugreports.adoc[]
 

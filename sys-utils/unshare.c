@@ -50,6 +50,11 @@
 #include "pwdutils.h"
 #include "env.h"
 
+#ifdef HAVE_LIBSYSTEMD
+#include <systemd/sd-varlink.h>
+#include "dl-systemd-varlink.h"
+#endif
+
 #ifndef HAVE_ENVIRON_DECL
 extern char **environ;
 #endif
@@ -87,6 +92,19 @@ enum {
 	SETGROUPS_DENY = 0,
 	SETGROUPS_ALLOW = 1,
 };
+
+#ifdef HAVE_LIBSYSTEMD
+/* Request parameters for io.systemd.NamespaceResource.AllocateUserRange */
+struct userns_alloc {
+	int		target;		/* uid inside the namespace, -1 to leave unset */
+	uint32_t	size;		/* 1 or 65536 */
+	uint32_t	delegates;	/* number of delegated 64K container ranges */
+	bool		foreign;	/* map the foreign uid range */
+	bool		transient;	/* allocate a transient range ("managed") */
+};
+
+static int allocate_user_range(int userns_fd, const struct userns_alloc *req);
+#endif
 
 static const char *setgroups_strings[] =
 {
@@ -154,6 +172,21 @@ static void forward_signal(int sig)
 {
 	if (child_pid > 0)
 		kill(child_pid, sig);
+}
+
+/* systemd-nsresourced only allocates ranges of exactly 1 or exactly 65536
+ * uids/gids, see systemd-nsresourced.service(8). */
+static uint32_t parse_transient_size(const char *str)
+{
+	if (!str)
+		return 1;
+	if (strcmp(str, "1") == 0)
+		return 1;
+	if (strcmp(str, "65536") == 0 || strcasecmp(str, "64k") == 0)
+		return 65536;
+
+	errx(EXIT_FAILURE, _("unsupported --map-transient size '%s', "
+			     "expected 1 or 64k"), str);
 }
 
 static unsigned long parse_propagation(const char *str)
@@ -792,6 +825,15 @@ static void __attribute__((__noreturn__)) usage(void)
 	fputs(_(" --map-groups <innergid>:<outergid>:<count>\n"
 		"                           map count groups from outergid to innergid (implies --user)\n"), out);
 	fputs(_(" --owner <uid>:<gid>       set the user namespace owner (implies --user)\n"), out);
+	fputs(_(" --map-transient[=<size>]  allocate a transient uid+gid range from systemd-nsresourced\n"
+		"                           instead of mapping the caller's own id; <size> is 1\n"
+		"                           (default) or 64k. The caller's id is not mapped, use\n"
+		"                           -S/-G to run as an id from the range (implies --user)\n"), out);
+	fputs(_(" --map-foreign             map the foreign uid range via systemd-nsresourced\n"
+		"                           (implies --user)\n"), out);
+	fputs(_(" --map-delegate-container-ranges <num>\n"
+		"                           delegate <num> 64K uid+gid ranges via systemd-nsresourced,\n"
+		"                           for use in nested containers (0-16, implies --user)\n"), out);
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_(" -f, --fork                fork before launching <program>\n"), out);
 	fputs(_(" --kill-child[=<signame>]  when dying, kill the forked child (implies --fork)\n"
@@ -830,6 +872,9 @@ int main(int argc, char *argv[])
 		OPT_MAPGROUPS,
 		OPT_MAPAUTO,
 		OPT_MAPSUBIDS,
+		OPT_MAP_TRANSIENT,
+		OPT_MAP_FOREIGN,
+		OPT_MAP_DELEGATE_CONTAINER_RANGES,
 		OPT_OWNER,
 		OPT_FORWARD_SIGNALS,
 		OPT_CLEAR_ENV,
@@ -861,6 +906,9 @@ int main(int argc, char *argv[])
 		{ "map-current-user", no_argument,    NULL, 'c'             },
 		{ "map-auto",      no_argument,       NULL, OPT_MAPAUTO     },
 		{ "map-subids",    no_argument,       NULL, OPT_MAPSUBIDS   },
+		{ "map-transient", optional_argument, NULL, OPT_MAP_TRANSIENT },
+		{ "map-foreign",   no_argument,       NULL, OPT_MAP_FOREIGN },
+		{ "map-delegate-container-ranges", required_argument, NULL, OPT_MAP_DELEGATE_CONTAINER_RANGES },
 		{ "owner",         required_argument, NULL, OPT_OWNER       },
 		{ "propagation",   required_argument, NULL, OPT_PROPAGATION },
 		{ "setgroups",     required_argument, NULL, OPT_SETGROUPS   },
@@ -884,6 +932,20 @@ int main(int argc, char *argv[])
 	gid_t mapgroup = -1, ownergroup = -1;
 	struct map_range *usermap = NULL;
 	struct map_range *groupmap = NULL;
+	/* How the uid inside the namespace was requested; with
+	 * systemd-nsresourced this selects the "target" of the allocation. */
+	enum {
+		TARGET_UNSET = 0,	/* no mapping option given */
+		TARGET_ROOT,		/* --map-root-user */
+		TARGET_CURRENT,		/* --map-current-user */
+		TARGET_EXPLICIT		/* --map-user / --map-group */
+	} target_mode = TARGET_UNSET;
+	int map_transient = 0;
+	uint32_t map_transient_size = 1;
+	int map_foreign = 0;
+	uint32_t map_delegate_container_ranges = 0;
+	int nsresourced_target = -1;
+	bool use_nsresourced;
 	struct ul_env_list *env_whitelist = NULL; /* environment whitelist */
 	int kill_child_signo = 0; /* 0 means --kill-child was not used */
 	const char *procmnt = NULL;
@@ -976,20 +1038,24 @@ int main(int argc, char *argv[])
 		case OPT_MAPUSER:
 			unshare_flags |= CLONE_NEWUSER;
 			mapuser = get_user(optarg);
+			target_mode = TARGET_EXPLICIT;
 			break;
 		case OPT_MAPGROUP:
 			unshare_flags |= CLONE_NEWUSER;
 			mapgroup = get_group(optarg);
+			target_mode = TARGET_EXPLICIT;
 			break;
 		case 'r':
 			unshare_flags |= CLONE_NEWUSER;
 			mapuser = 0;
 			mapgroup = 0;
+			target_mode = TARGET_ROOT;
 			break;
 		case 'c':
 			unshare_flags |= CLONE_NEWUSER;
 			mapuser = real_euid;
 			mapgroup = real_egid;
+			target_mode = TARGET_CURRENT;
 			break;
 		case OPT_MAPUSERS:
 			unshare_flags |= CLONE_NEWUSER;
@@ -1026,6 +1092,23 @@ int main(int argc, char *argv[])
 			unshare_flags |= CLONE_NEWUSER;
 			insert_map_range(&usermap, read_subid_range(_PATH_SUBUID, real_euid, 1));
 			insert_map_range(&groupmap, read_subid_range(_PATH_SUBGID, real_euid, 1));
+			break;
+		case OPT_MAP_TRANSIENT:
+			unshare_flags |= CLONE_NEWUSER;
+			map_transient = 1;
+			map_transient_size = parse_transient_size(optarg);
+			break;
+		case OPT_MAP_FOREIGN:
+			unshare_flags |= CLONE_NEWUSER;
+			map_foreign = 1;
+			break;
+		case OPT_MAP_DELEGATE_CONTAINER_RANGES:
+			unshare_flags |= CLONE_NEWUSER;
+			map_delegate_container_ranges = strtou32_or_err(optarg,
+					_("failed to parse --map-delegate-container-ranges argument"));
+			if (map_delegate_container_ranges > 16)
+				errx(EXIT_FAILURE, _("--map-delegate-container-ranges argument "
+						      "must be between 0 and 16"));
 			break;
 		case OPT_OWNER:
 			unshare_flags |= CLONE_NEWUSER;
@@ -1107,24 +1190,83 @@ int main(int argc, char *argv[])
 		errx(EXIT_FAILURE, _("options --monotonic and --boottime require "
 			"unsharing of a time namespace (-T)"));
 
+	/* systemd-nsresourced is only needed for the allocation modes that
+	 * newuidmap/newgidmap cannot provide: a transient range, mapping the
+	 * foreign uid range, or delegating container ranges. Plain
+	 * --map-root-user/--map-current-user keep using the legacy idmap
+	 * path. */
+	use_nsresourced = map_transient || map_foreign || map_delegate_container_ranges;
+
+#ifndef HAVE_LIBSYSTEMD
+	(void)nsresourced_target;
+	(void)map_transient_size;
+	if (use_nsresourced)
+		errx(EXIT_FAILURE, _("systemd-nsresourced support is not available"));
+#endif
+
+	if (use_nsresourced) {
+		/* systemd-nsresourced installs the whole map itself, so the
+		 * range-chain options that drive newuidmap/newgidmap cannot be
+		 * combined with it. */
+		if (usermap || groupmap)
+			errx(EXIT_FAILURE, _("options --map-users, --map-groups, --map-auto "
+					     "and --map-subids are not supported with "
+					     "systemd-nsresourced"));
+
+		/* --map-root-user/--map-current-user/--map-user select the
+		 * "target" uid of the allocation rather than driving
+		 * newuidmap/newgidmap. */
+		switch (target_mode) {
+		case TARGET_UNSET:
+			break;
+		case TARGET_ROOT:
+			nsresourced_target = 0;
+			break;
+		case TARGET_CURRENT:
+			/* A transient range does not map the caller at all, so
+			 * "map the current user to itself" has no meaning. */
+			if (map_transient)
+				errx(EXIT_FAILURE, _("options --map-current-user and "
+						     "--map-transient are mutually exclusive"));
+			/* leave the target unset: map the caller to itself */
+			break;
+		case TARGET_EXPLICIT:
+			/* nsresourced always allocates uids and gids
+			 * symmetrically, so a single target must cover both. */
+			if (mapuser != (uid_t) -1 && mapgroup != (gid_t) -1 &&
+			    (uid_t) mapgroup != mapuser)
+				errx(EXIT_FAILURE, _("options --map-user and --map-group must "
+						     "specify the same id with systemd-nsresourced, "
+						     "which maps uids and gids symmetrically"));
+			nsresourced_target = mapuser != (uid_t) -1 ? (int) mapuser
+								   : (int) mapgroup;
+			if (!map_transient && nsresourced_target != 0)
+				errx(EXIT_FAILURE, _("mapping the current user to a non-zero id "
+						     "requires --map-transient"));
+			break;
+		}
+	}
+
 	/* clear any inherited settings */
 	signal(SIGCHLD, SIG_DFL);
 
 	if (npersists && (unshare_flags & (CLONE_NEWNS | CLONE_NEWUSER)))
 		pid_bind = bind_ns_files_from_child(&fd_bind);
 
-	if (usermap || (mapuser != (uid_t) -1 && owneruser != (uid_t) -1)) {
-		add_single_map_range(&usermap, real_euid, mapuser);
-		mapuser = -1;
-	}
+	if (!use_nsresourced) {
+		if (usermap || (mapuser != (uid_t) -1 && owneruser != (uid_t) -1)) {
+			add_single_map_range(&usermap, real_euid, mapuser);
+			mapuser = -1;
+		}
 
-	if (groupmap || (mapgroup != (uid_t) -1 && ownergroup != (uid_t) -1)) {
-		add_single_map_range(&groupmap, real_egid, mapgroup);
-		mapgroup = -1;
-	}
+		if (groupmap || (mapgroup != (uid_t) -1 && ownergroup != (uid_t) -1)) {
+			add_single_map_range(&groupmap, real_egid, mapgroup);
+			mapgroup = -1;
+		}
 
-	if (usermap || groupmap)
-		pid_idmap = map_ids_from_child(&fd_idmap, usermap, groupmap);
+		if (usermap || groupmap)
+			pid_idmap = map_ids_from_child(&fd_idmap, usermap, groupmap);
+	}
 
 	if (ownergroup != (gid_t) -1 && setgroups(0, NULL) != 0)
 		err(EXIT_FAILURE, _("setgroups failed"));
@@ -1137,7 +1279,7 @@ int main(int argc, char *argv[])
 		err(EXIT_FAILURE, _("unshare failed"));
 
 	/* Tell child we've called unshare() */
-	if (usermap || groupmap)
+	if (!use_nsresourced && (usermap || groupmap))
 		sync_with_child(pid_idmap, fd_idmap);
 
 	if (force_boottime)
@@ -1273,19 +1415,44 @@ int main(int argc, char *argv[])
 #endif
 	}
 
-	if (mapuser != MAX_OF_UINT_TYPE(uid_t) && !usermap)
-		map_id(_PATH_PROC_UIDMAP, mapuser, real_euid);
+#ifdef HAVE_LIBSYSTEMD
+	if (use_nsresourced) {
+		const struct userns_alloc req = {
+			.target    = nsresourced_target,
+			.size      = map_transient ? map_transient_size : 1,
+			.delegates = map_delegate_container_ranges,
+			.foreign   = map_foreign,
+			.transient = map_transient,
+		};
+		int userns_fd;
 
-	/* Since Linux 3.19 unprivileged writing of /proc/self/gid_map
-	 * has been disabled unless /proc/self/setgroups is written
-	 * first to permanently disable the ability to call setgroups
-	 * in that user namespace. */
-	if (mapgroup != MAX_OF_UINT_TYPE(gid_t) && !groupmap) {
-		if (setgrpcmd == SETGROUPS_ALLOW)
-			errx(EXIT_FAILURE, _("options --setgroups=allow and "
-					"--map-group are mutually exclusive"));
-		setgroups_control(SETGROUPS_DENY);
-		map_id(_PATH_PROC_GIDMAP, mapgroup, real_egid);
+		if (ul_dlopen_libsystemd_varlink() < 0)
+			err(EXIT_FAILURE, _("failed to load libsystemd"));
+
+		userns_fd = open(_PATH_PROC_NSDIR "/user", O_RDONLY | O_CLOEXEC);
+		if (userns_fd < 0)
+			err(EXIT_FAILURE, _("cannot open %s"), _PATH_PROC_NSDIR "/user");
+
+		allocate_user_range(userns_fd, &req);
+		close(userns_fd);
+	}
+#endif
+
+	if (!use_nsresourced) {
+		if (mapuser != MAX_OF_UINT_TYPE(uid_t) && !usermap)
+			map_id(_PATH_PROC_UIDMAP, mapuser, real_euid);
+
+		/* Since Linux 3.19 unprivileged writing of /proc/self/gid_map
+		 * has been disabled unless /proc/self/setgroups is written
+		 * first to permanently disable the ability to call setgroups
+		 * in that user namespace. */
+		if (mapgroup != MAX_OF_UINT_TYPE(gid_t) && !groupmap) {
+			if (setgrpcmd == SETGROUPS_ALLOW)
+				errx(EXIT_FAILURE, _("options --setgroups=allow and "
+						"--map-group are mutually exclusive"));
+			setgroups_control(SETGROUPS_DENY);
+			map_id(_PATH_PROC_GIDMAP, mapgroup, real_egid);
+		}
 	}
 
 	if (setgrpcmd != SETGROUPS_NONE)
@@ -1363,3 +1530,55 @@ int main(int argc, char *argv[])
 	}
 	exec_shell();
 }
+
+#ifdef HAVE_LIBSYSTEMD
+
+static int allocate_user_range(int userns_fd, const struct userns_alloc *req)
+{
+	int r, userns_idx;
+	const char *error_id;
+	char name[32];
+	sd_varlink *vl;
+	sd_json_variant *reply;
+
+	r = systemd_varlink_call(sd_varlink_connect_address)(&vl, "/run/systemd/io.systemd.NamespaceResource");
+	if (r < 0)
+		errx(EXIT_FAILURE, _("unable to connect to varlink address: %s"), strerror(-r));
+
+	r = systemd_varlink_call(sd_varlink_set_allow_fd_passing_output)(vl, true);
+	if (r < 0)
+		errx(EXIT_FAILURE, _("unable to allow fd passing: %s"), strerror(-r));
+
+	userns_idx = systemd_varlink_call(sd_varlink_push_dup_fd)(vl, userns_fd);
+	if (userns_idx < 0)
+		errx(EXIT_FAILURE, _("unable to push fd: %s"), strerror(-userns_idx));
+
+	snprintf(name, sizeof(name), "ul-pid-%u", getpid());
+
+	r = systemd_varlink_call(sd_varlink_callb)(vl, "io.systemd.NamespaceResource.AllocateUserRange",
+		&reply,
+		&error_id,
+		SD_JSON_BUILD_OBJECT(
+			SD_JSON_BUILD_PAIR_STRING("name", name),
+			SD_JSON_BUILD_PAIR_UNSIGNED("size", req->size),
+			SD_JSON_BUILD_PAIR_UNSIGNED("userNamespaceFileDescriptor", userns_idx),
+			SD_JSON_BUILD_PAIR_CONDITION(req->foreign, "mapForeign", SD_JSON_BUILD_BOOLEAN(true)),
+			SD_JSON_BUILD_PAIR_CONDITION(req->target >= 0, "target", SD_JSON_BUILD_UNSIGNED(req->target)),
+			SD_JSON_BUILD_PAIR_CONDITION(req->delegates > 0, "delegateContainerRanges", SD_JSON_BUILD_UNSIGNED(req->delegates)),
+			SD_JSON_BUILD_PAIR_STRING("type", req->transient ? "managed" : "self")));
+	if (r < 0)
+		errx(EXIT_FAILURE, _("unable to make varlink call: %s"), strerror(-r));
+	// char *reply_str = NULL;
+	// systemd_varlink_call(sd_json_variant_format)(reply, 0, &reply_str);
+	// printf("reply: %s\n", reply_str);
+	if (error_id)
+	{
+		errx(EXIT_FAILURE, _("io.systemd.NamespaceResource.AllocateUserRange failed: %s"), error_id);
+	}
+
+	systemd_varlink_call(sd_json_variant_unref)(reply);
+	systemd_varlink_call(sd_varlink_close_unref)(vl);
+	return 0;
+}
+
+#endif
